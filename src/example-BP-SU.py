@@ -27,6 +27,7 @@
 # ---------
 # 
 # 28-Jun-2024   Initial version
+# 18-Aug-2024   Added truncation error to apply_2local_gate
 #
 #----------------------------------------------------------
 #
@@ -156,7 +157,7 @@ def main():
 	print("  Run BP on a random PEPS, use it to move to the Vidal gauge,")
 	print("  calculate local expectation value, and apply a 2-local gate\n\n")
 	
-	np.random.seed(2)
+	np.random.seed(5)
 	
 	d = 2  # physical dimension
 	D = 5  # PEPS bond dimension
@@ -287,9 +288,11 @@ def main():
 	# and 11 will be the target in the C-NOT gate.
 	#
 	
-	gauged_T_list, w_dict = apply_2local_gate(gauged_T_list, e_list, \
+	gauged_T_list, w_dict, err = apply_2local_gate(gauged_T_list, e_list, \
 		e_dict, w_dict, g=CNOT, e=16, Dmax=D)
-		
+	
+	print(f" => *Hueristic* relative truncation error: {err:.6g}")
+	
 	#
 	# Now gauged_T_list is the updated tensors with an approx Vidal gauge
 	#

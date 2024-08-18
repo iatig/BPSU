@@ -1,11 +1,17 @@
 #-----------------------------------------------------------------------
 #
-#               BUSP.py            VERSION 0.1
+#               BPSU.py            VERSION 0.1
 #    ==================================================
 #
 #  Functions to perform Imaginary/Real Time Evolution (ITE) using
 #  Simple Update (SU), with a BP gauge fixing.
 #
+#
+# History
+# =========================
+#
+# 18-Aug-2024: Itai  apply_2local_gate: added a the relative truncation 
+#                    error as an output parameter to 
 #
 #
 #=======================================================================
@@ -303,7 +309,7 @@ def gather_ext_legs(T, leg):
 def apply_2local_gate(T_list, e_list,  e_dict, w_dict, g, e, \
 	Dmax=None, eps=None):
 		
-	"""
+	r"""
 	
 	Given a TN in the Vidal gauge, apply a 2-body gate g on the tensors 
 	of a given edge and truncate the bond dimension to Dmax using the 
@@ -336,6 +342,12 @@ def apply_2local_gate(T_list, e_list,  e_dict, w_dict, g, e, \
   --------
   
   T_list, w_dict --- Tensors of the updated TN.
+  
+  truncation_error --- The relative truncation error of the SVD 
+                       coefficients. If we truncated all s_i 
+                       with i>R then:
+                       
+                           sqrt[ \sum_{i>R} s_i^2 / \sum_i s^2]
 	      
 	
 	
@@ -467,9 +479,19 @@ def apply_2local_gate(T_list, e_list,  e_dict, w_dict, g, e, \
 		# Re-define the unitaries U,V and the weights s to contain only
 		# the non-truncated values
 		# 
+		
+		#
+		# Calculate the relative truncation error
+		#
+		truncation_error = sqrt( sum(s[Dmax:]**2)/sum(s**2) )
+		
 		s = s[:Dmax]
 		U = U[:,:Dmax]
 		V = V[:Dmax, :]
+		
+	else:
+		
+		truncation_error = 0.0
 	
 	#
 	# Normalize the final SU weights
@@ -568,7 +590,7 @@ def apply_2local_gate(T_list, e_list,  e_dict, w_dict, g, e, \
 	w_dict[e] = s
 
 	
-	return T_list, w_dict
+	return T_list, w_dict, truncation_error
 	
 	
 #
