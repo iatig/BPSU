@@ -27,7 +27,12 @@
 # ---------
 # 
 # 28-Jun-2024   Initial version
+#
 # 18-Aug-2024   Added truncation error to apply_2local_gate
+#
+# 31-Aug-2024   Change the normalization after update to L_2 
+#               normalization. Accordingly, when eps is given
+#               use the L_2 norm to choose the truncation index.
 #
 #----------------------------------------------------------
 #

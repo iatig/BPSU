@@ -93,7 +93,7 @@ def contract_leg(T, g, leg):
 #
 
 def edge_BP_gauging(T1, leg1, T2, leg2, m12, m21):
-	"""
+	r"""
 	
 	Given two neighboring tensors, T1, T2, with a common edge, together
 	with the two incoming/outgoing BP messages between them, perform 
@@ -333,8 +333,9 @@ def apply_2local_gate(T_list, e_list,  e_dict, w_dict, g, e, \
   Dmax --- The maximal final bond dimension. If not given, no truncation
            is done.
            
-  eps  --- Another truncation criteria. If given, all singular values
-           that are < s_max*eps are truncated. If given in conjuncation 
+  eps  --- Another truncation criteria. If given, we truncate all 
+           singular values starting from k such that
+           \sqrt{\sum_{i>= k} s_i^2} \le \eps. If given in conjuncation 
            with Dmax, then the minimal bond dimension is used.
   
           
@@ -352,6 +353,10 @@ def apply_2local_gate(T_list, e_list,  e_dict, w_dict, g, e, \
 	
 	
 	"""
+	
+	
+	if Dmax is None:
+		Dmax = 1000000
 	
 	#
 	# Locate the vertices of the edge e=(i1,i2) and their tensors T1, T2
@@ -468,11 +473,32 @@ def apply_2local_gate(T_list, e_list,  e_dict, w_dict, g, e, \
 		
 		if eps is not None:
 			#
-			# If eps is given, then we truncate all singular 
-			# values < s_max*eps. s_max = s[0]
+			# If eps is given, then we truncate all singular values from 
+			# the index k s.t. (s[k]**2 + s[k+1]**2 + ...)^{1/2} < eps*||s||
+			# where ||s|| is the L_2 norm of s.
 			#
-			i = np.where(s<s[0]*eps)[0][0]
-			if i<Dmax:
+			# In other words, we truncate such that the L_2 truncation error
+			# will be at most eps.
+			#
+			
+			#
+			# Calculate psums --- an array of partial sums of s^2, where:
+			#
+			# psums[k] = s[k]**2 + s[k+1]**2 + ...
+			#
+			
+			s2 = s**2
+			psums = np.cumsum(s2[::-1])
+			psums = psums[::-1]
+
+			# normalize it by the overall L2 norm
+			psums = psums/psums[0]
+			
+			# Find the place where we need to truncate
+			i = np.where(psums<eps**2)[0][0]
+			
+
+			if Dmax>i:
 				Dmax = i
 		
 		#
@@ -489,14 +515,15 @@ def apply_2local_gate(T_list, e_list,  e_dict, w_dict, g, e, \
 		U = U[:,:Dmax]
 		V = V[:Dmax, :]
 		
+		
 	else:
 		
 		truncation_error = 0.0
 	
 	#
-	# Normalize the final SU weights
+	# Normalize the final SU weights by the L_2 norm
 	#
-	s = s/sum(s)
+	s = s/sqrt(sum(s**2))
 	
 		
 	# -------------------------------------------------
