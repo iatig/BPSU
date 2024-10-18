@@ -85,6 +85,10 @@ def contract_leg(T, g, leg):
 	Given a tensor T and a matrix g, return a new tensor T' which is 
 	the contraction of g along the T's leg (indicated by leg)
 	
+	The indexing of leg *does not* include the physical leg. So 
+	if T=T[i0,i1,i2,...] then i0 is the physical leg, and so setting 
+	leg=0 means we contract via i1.
+	
 	Input Parameters:
 	-------------------
 	T   --- The tensor to be contractged
