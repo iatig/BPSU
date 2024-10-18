@@ -13,6 +13,7 @@
 # 18-Aug-2024: Itai  apply_2local_gate: added a the relative truncation 
 #                    error as an output parameter to 
 #
+# 18-Oct-2024: Itai  Add documentation to contract_leg() function
 #
 #=======================================================================
 
@@ -79,6 +80,23 @@ def sqrt_message(m):
 #
 
 def contract_leg(T, g, leg):
+	r"""
+	
+	Given a tensor T and a matrix g, return a new tensor T' which is 
+	the contraction of g along the T's leg (indicated by leg)
+	
+	Input Parameters:
+	-------------------
+	T   --- The tensor to be contractged
+	g   --- The matrix 
+	leg --- index of the leg of T that we contract
+	
+	Output:
+	-------
+	The new T (legs are permuted back to their original order)
+	
+	
+	"""
 	
 	newT = tensordot(T, g, axes=([leg+1],[0]))
 	L = len(T.shape)
