@@ -15,6 +15,42 @@
 #
 # 18-Oct-2024: Itai  Add documentation to contract_leg() function
 #
+#
+# 20-Jun-2025: Major changes:
+#   - add sqrt_message2() to have a more rubust way of taking the 
+#     square of a BP message, as used in the function edge_BP_gaugin().
+#
+#   - Make edge_BP_gauging() more robust by adding a small random 
+#     perturbation if the SVD does not converge. Also normalize the weights according to L_2 instead of L_1
+#
+#   - add the local_enviless_truncation(), global_enviless_truncation() 
+#     functions to perfrom an evnironment-free truncation of a PEPS tensor
+#
+#   - added apply_2local_gate_notrunc() function to apply 2-gates 
+#     without any truncaiton
+#
+#   - Added apply_PEPO_to_PEPS() function, which applies a PEPO to a 
+#     PEPS (without compression)
+#
+#   - Added truncate_weights() function that truncates a set of Vidal 
+#     weights given a Dmax and L2thresh thereshold. It is called from 
+#     the BP_compress() function
+#
+#   - Added BP_compress() to compress a PEPS according to a given Dmax, 
+#     L2thresh threshold. This is done using BP.
+#
+#   - Added PEPO_to_PEPS(), PEPS_to_PEPO() functions to map between 
+#     these two TNs (simply by fusing or un-fusing the two physical 
+#     legs of the PEPO)
+#
+#   - Added peps_dist() --- A debugging function to calculate the 
+#     distance between two PEPS.
+#
+#   - Added the  BP_compress_PEPO() function which compresses a PEPO by
+#     first turning it to a PEPS and then running BP_compress().
+#
+#
+#
 #=======================================================================
 
 
@@ -28,9 +64,12 @@ from numpy import zeros, ones, array, tensordot, sqrt, diag, conj, \
 	eye, trace, pi, exp, isnan
 
 
+from qbp import qbp, get_Bethe_free_energy
+
 HERMICITY_ERR = 1e-4
 PINV_THRESH = 1e-12
 ROBUST_THRESH = 1e8
+
 
 
 #
@@ -76,6 +115,104 @@ def sqrt_message(m):
 
 
 #
+# ---------------------------- sqrt_message  ---------------------------
+#
+
+def sqrt_message2(m):
+	
+	"""
+	
+	Given a message m (which is a PSD matrix), calculate m^{1/2}, m^{-1/2}.
+	
+	Do that in a robust way by first diagonalizing, and then padding
+	the smallest values by EPS*(largest e.v.).
+	
+	We do not want to use the Penrose inverse because that would mean 
+	we will not create a fully invertable matrix. But we need the matrix
+	to be fully invertable, for otherwise the BP-assited Vidal gauge will
+	suffer from severe inaccuracies. Therefore, we simply pad the smallest
+	eigenvalues and make them larger, instead of removing them.
+	
+	
+	"""
+	
+	#
+	# Self test the sqrt messages
+	#
+	TEST_CORRECTNESS = False
+	EPS_TEST=1e-8
+	
+	EPS = 1e-12
+	
+	#
+	# Diagonalize (in a robust way)
+	#
+
+	converged = False
+	d = m.shape[0]
+	m1 = m
+
+	dround = 1
+	while not converged:
+		
+		converged = True
+		
+		try:
+			evals, U = np.linalg.eigh(m1)
+			
+		except:
+			print(f"Warnning: LinAlgError occured in BPSU.sqrt_message while "\
+				f"trying to use linalg.eigh. Adding a small "\
+				f"random perturbation and trying again (round {dround}).")
+			
+			N = np.random.normal(size=(d,d))
+			N2 = N@N.T
+			N2 = N2/norm(N2)
+			m1 = m + EPS*N2*norm(m)
+			dround += 1
+			converged = False
+	
+	#
+	# The eigenvalues threshold: all the eigenvalues that are smaller 
+	# then some threshold, are changed to that threshold. This gurantees
+	# that:
+	# 1) m is invertible (we need that for m^{-1/2})
+	# 2) our approximation is close to the original m
+	#
+	
+	thresh = evals[-1]*PINV_THRESH
+	if evals[0]<thresh:
+		i = np.where(evals>thresh)[0][0]
+		evals[:i] = evals[-1]*PINV_THRESH
+	
+	# 
+	# Calculate m^{1/2}, and m^{-1/2}
+	#
+	M_sq = U@diag(sqrt(evals))@conj(U.T)
+	Minv_sq = U@diag(1/sqrt(evals))@conj(U.T)
+
+
+	if TEST_CORRECTNESS:
+		eq1 = norm(M_sq@M_sq-m)
+		eq2 = norm(M_sq@Minv_sq-eye(m.shape[0]))
+		nr_m = norm(m)
+		
+		if eq1>EPS_TEST*nr_m:
+			print("Warnning: Error in sqrt_message2: " \
+				f"norm(M_sq@M_sq-m)/norm(m)={eq1:.6g} > norm(m)*{EPS_TEST} "\
+				f"for norm(m)={nr_m:.6g}\n")
+			
+		if eq2>EPS_TEST*nr_m:
+			print("Warnning: Error in sqrt_message2: " \
+				f"norm(M_sq@Minv_sq-I)={eq2:.6g} > norm(m)*{EPS_TEST} "\
+				f"for norm(m)={nr_m:.6g}\n")
+
+
+	return M_sq, Minv_sq
+
+
+
+#
 # ------------------------ contract_leg  -------------------------------
 #
 
@@ -84,6 +221,11 @@ def contract_leg(T, g, leg):
 	
 	Given a tensor T and a matrix g, return a new tensor T' which is 
 	the contraction of g along the T's leg (indicated by leg)
+	
+	If alpha_i is the index of the i'th leg, then the new tensor
+	is given by
+	
+	\sum_{\alpha_i} T_{..., alpha_i, ...} g_{alpha_i, \beta}
 	
 	The indexing of leg *does not* include the physical leg. So 
 	if T=T[i0,i1,i2,...] then i0 is the physical leg, and so setting 
@@ -132,11 +274,11 @@ def edge_BP_gauging(T1, leg1, T2, leg2, m12, m21):
 	and satisfies the Vidal gauge condition:
 	
 	         newT1
-	      +---O----        +----
+	      +---O---- (ket)  +----  (ket)
 	     /    |            |
 	m01 O     |      =     |
 	     \    |            |
-	      +---O----        +----
+	      +---O---- (bra)  +----  (bra)
 	         newT1*
 	         
 	         
@@ -162,26 +304,61 @@ def edge_BP_gauging(T1, leg1, T2, leg2, m12, m21):
 	
 	"""
 	
+	EPS = 1e-8
+	
+	
 	#
 	# First calculate the square-root and its inverse for both BP 
 	# messages.
 	#
-	m12_sq, m12inv_sq = sqrt_message(m12)
-	m21_sq, m21inv_sq = sqrt_message(m21)
+	# Note: the qbp routine outputs messages m12[alpha,beta], where
+	#       alpha is the ket and beta is the bra. But for being consistent
+	#       with the derivation in Tinder et al, we use m12.T so that
+	#       the first index is the bra and the second index is the ket.
+	#
+	m12_sq, m12inv_sq = sqrt_message2(m12.T)
+	m21_sq, m21inv_sq = sqrt_message2(m21.T)
+	
+	
 	
 	#
 	# Create the matrix in the middle
 	#
-	M = m12_sq.T@m21_sq
+	M = m12_sq@m21_sq.T
 	
-	U,s,V = svd(M, full_matrices=False)
+	M1 = M
+	converged = False
+	dround = 1
+	while not converged:
+		
+		converged = True
+		
+		try:
+			U,s,V = svd(M1, full_matrices=False)
+			
+		except:
+			print(f"Warnning: LinAlgError occured in BPSU.edge_BP_gauging while "\
+				f"trying to perform svd. Adding a small "\
+				f"random perturbation and trying again (round {dround}).")
+			
+			N = np.random.normal(size=M.shape)
+			N = N/norm(N, ord=2)
+			M1 = M + EPS*N*norm(M, ord=2)
+			dround += 1
+			converged = False
+			
+		if dround==20:
+			print("\n\n")
+			print("Error --- unable to converge after 20 tries... quitting\n")
+			exit(1)
+	
 		
 	#
 	# Calculate g1, g2 --- the gauge trans we apply to leg1,leg2 in T1, T2
 	#
-	g1 = m12inv_sq.T@U
+	g1 = m12inv_sq@U
 	
-	g2 = m21inv_sq.T@V.T
+	g2 = m21inv_sq@V.T
 		
 	#
 	# Apply g1, g2 to T1, T2 and obtain newT1, newT2
@@ -193,6 +370,9 @@ def edge_BP_gauging(T1, leg1, T2, leg2, m12, m21):
 	
 	return newT1, s, newT2
 	
+
+
+
 
 
 
@@ -245,16 +425,23 @@ def BP_gauging(T_list, e_dict, m_list):
 				
 		new_Ti, w_e, new_Tj = edge_BP_gauging(gauged_T_list[vi], i_leg, \
 			gauged_T_list[vj], j_leg, m_list[vi][vj], m_list[vj][vi])
+			
+		# Normalize the weights (according to L_2 norm)
+		w_e = w_e/sqrt(sum(w_e**2))
 		
 		gauged_T_list[vi] = new_Ti
 		gauged_T_list[vj] = new_Tj
 		
-		# Normalize the weights
-		w_dict[e] = w_e/sum(w_e)
+		w_dict[e] = w_e
 		
 		
 		
 	return gauged_T_list, w_dict
+	
+
+	
+	
+	
 	
 #
 # ---------------------------  merge_SU_weights  -----------------------
@@ -274,11 +461,15 @@ def merge_SU_weights(T_list, e_dict, w_dict):
 	
 	for e in e_dict.keys():
 		
-		w = w_dict[e]
-		sqw = sqrt(abs(w))
-		sqM = diag(sqw)
-		
 		i1,leg1, i2,leg2 = e_dict[e]
+		w = w_dict[e]
+		D_w = w.shape[0]
+		
+		D_tensor = merged_T_list[i1].shape[leg1+1]
+		
+		sqw = sqrt(abs(w))
+		sqM = zeros([D_tensor, D_w])
+		sqM[:D_w,:D_w] = diag(sqw)
 		
 		T1 = contract_leg(merged_T_list[i1], sqM, leg1)
 		T2 = contract_leg(merged_T_list[i2], sqM, leg2)
@@ -287,6 +478,9 @@ def merge_SU_weights(T_list, e_dict, w_dict):
 		merged_T_list[i2] = T2
 		
 	return merged_T_list
+
+
+
 		
 #
 # --------------------------   gather_ext_legs   -----------------------
@@ -296,33 +490,307 @@ def gather_ext_legs(T, leg):
 	
 	"""
 	
-	Permute legs into [D0, D1, ..., d, Di] and then fuse the first Ds, 
-	so that we get: [Drest, d, Di] ==> [Drest, d*Di]
+	Given a tensor T with the legs [d, D_0, D_1, ..., D_k], and a leg 
+	number leg=0,1,2,...k, permute the legs of T into the order
+	
+	[D_0, D_1, ..., D_k, d, D_leg] and then fuse the first Ds, as well
+	as the d, D_leg legs
+	
+	We therefore get: 
+	
+	[D_0, D_1, ..., D_k, d, D_leg] ==> [Drest, d, D_leg] ==> [Drest, d*D_leg]
 	
 	In addition, return the shape of the tensor before we coarse-grain
 	the indices, so that we will know later how to undo this.
+	
+	Input Parameters:
+	-----------------
+	T   --- The ket tensor
+	
+	leg --- The index of the leg. Note leg=0 means the first *logical*
+	        leg
+	        
+	        
+	Output:
+	-------
+	
+	M --- The permuted/fused tensor
+	
+	sh --- The shape of the intermediate tensor 
+	       [D_0, D_1, ..., D_k, d, D_leg]  (before fusing the legs)
+	       This is useful if we want to un-fuse it.
 	
 	
 	"""
 	
 	L = len(T.shape)
-	
+
+	#
+	# Define the permutation that takes d, D_leg to the end
+	#
 	perm = list(range(L))
 	perm.remove(0)
 	perm.remove(leg+1)
 	
 	perm = perm + [0,leg+1]
 	
-	
-	dD = T.shape[0]*T.shape[leg+1]
-	Drest = T.size//dD
-	
+	#
+	# Permute, and keep a record of the tensor shape
+	#
 	M = T.transpose(perm)
 	sh = list(M.shape)
+	
+	#
+	# Fuse the rest of the legs, as well as d, D_leg
+	#
+	dD = T.shape[0]*T.shape[leg+1]
+	Drest = T.size//dD
+
 	M = M.reshape([Drest, dD])
 	
 	return M, sh
 	
+
+#
+# ------------------   local_enviless_truncation   ---------------------
+#
+
+def local_enviless_truncation(T, leg, eps):
+	"""
+	
+	Perform a simple L_2 truncation of a tensor, which does *not* use
+	the environment. 
+	
+	Specifically, we are given a PEPS tensor with legs [d, D0, D1, ...]
+	and a leg index leg. We then turn it into a matrix [D_leg, D_rest], 
+	and perform SVD. We remove all singular values whose normalized 
+	*accumulated* L_2 weight is smaller than a fraction of eps.
+	
+	If truncation is performed, then also return a corresponding matrix
+	to be multiplied by the adjoint tensor.
+	
+	
+	This is much faster than regular truncation but
+	also much less accurate. It is therefore recommended to use with 
+	very small eps on tensors where the bond dimension grew artificially. 
+	
+	Input Parameters:
+	------------------
+	T   --- The PEPS tensor. Assumed to be of the form [d, D0, D1, ...]
+	        where d is the physical leg
+	      
+	leg --- The index of the leg to be truncated
+	
+	eps --- The accumulated, normalized L_2 error
+	
+	Output:
+	-------
+	newT --- The truncated T (along the leg).
+	
+	R    --- A matrix to be multiplied on the adjoint tensor using
+	         the contract_leg function. 
+	         
+	Note: If not truncation is needed, then newT=T and R=None.
+
+	"""
+	
+	sh = T.shape
+	L = len(sh)
+	D = sh[leg+1]  # The un-compressed, original bond dimension
+	
+	#
+	# How many physical legs
+	#
+	leg_shift=1
+
+	#
+	# Define the permutation that takes D_leg to the beginning
+	#
+	perm = list(range(L))
+	perm.remove(leg+leg_shift)
+	
+	perm = [leg+leg_shift] + perm
+	
+	#
+	# Turn into a matrix T1, of the shape [D, D_rest]
+	#
+	T1 = T.transpose(perm)
+	sh1 = list(T1.shape)
+	T1 = T1.reshape([D, -1])
+	
+	#
+	# Perform SVD
+	#
+	
+	U, s, V = svd(T1, full_matrices=False)
+
+	# 
+	# Calculate the normalized L_2 weights and look for a place to 
+	# truncate
+	#
+	try:
+		s2 = s**2
+	except FloatingPointError:
+		print("got s=",s)
+		exit(1)
+	psums = np.cumsum(s2[::-1])
+	psums = psums[::-1]
+
+	# normalize it by the overall L2 norm
+	psums = psums/psums[0]
+	
+	
+	# Find the place where we need to truncate
+	newD = None
+	psums_loc = np.where(psums<eps**2)[0]
+	if psums_loc.shape[0]>0:
+		newD = psums_loc[0]
+
+	
+	if newD is None or newD==D:
+		#
+		# In such case no truncation is needed
+		#
+		return T, None
+	
+	#
+	# If we got up to here, then we need to truncate.
+	#
+	
+	newT = diag(s[:newD])@V[:newD, :]
+	R = U[:, :newD]
+	
+	#
+	# reshape and transpose newT back to its original legs order
+	#
+	
+	sh1[0] = newD
+	newT = newT.reshape(sh1)
+	
+	perm = list(range(1,L))
+	perm.insert(leg+leg_shift, 0)
+	
+	newT = newT.transpose(perm)
+	
+	return newT, R
+	
+
+	
+#
+# ------------------   global_enviless_truncation   --------------------
+#
+
+def global_enviless_truncation(TN_params, eps, verts_list=None, \
+	es_list=None):
+		
+	r"""
+	
+	Performs an environment-less truncation of a PEPS. That is, we take
+	a single ket tensor and one leg of it, and use simple SVD to truncate 
+	it, *regardless* of its environment. This is OK if we allow ourself
+	to truncate really small weights.
+	
+	The truncation is defined by an eps parameter. We truncate all
+	singular values s_l0, s_{l0+1}, ... such that
+	
+	\sqrt(sum_{l>= l0) s^2_l) < eps\sqrt(\sum_l s^2_l)
+	
+	This is not an optimal truncation. But is very efficient, and can 
+	be used to reduce 'spurious' dimension before doing the more exact
+	BP-based truncation. In such case, we should take eps<<1, say, 1e-9.
+	
+	
+	Input Parameters:
+	-----------------
+	TN_params --- a dictionary with the parameters of the TN.
+	              Specifically, we need T_list, e_list, e_dict
+	              
+	eps       --- The normalized accumulated L_2 norm that we wish 
+	              to truncate.
+	              
+	verts_list --- An optional list of vertices we wish to truncate. If
+	               omitted then we consider all vertices
+	               
+	es_list    --- An optional list of lists of edges for each tensors
+	               we truncate. This should correspond to the tensors
+	               in verts_list
+	               
+	Output:
+	-------
+	
+	newT_list --- The updated truncated tensors list
+	
+	
+	
+	"""
+		
+	#
+	# Extract the TN params
+	#
+	T_list = TN_params['T_list']
+	e_list = TN_params['e_list']
+	e_dict = TN_params['e_dict']
+	
+	n = len(T_list)
+	
+
+	if verts_list is None:
+		verts_list = list(range(n))
+		
+	newT_list = T_list.copy()
+
+	#
+	# Main loop: go over the tensors we wish to truncate, and for each 
+	#            tensor, go over the legs we wish to truncate.
+	#
+	for i,v in enumerate(verts_list):
+		T = newT_list[v]
+		
+		#
+		# Find the list of edges that we wish to truncate. If it is not
+		# given, then truncate all legs
+		#
+		if es_list is None:
+			es = e_list[v]
+		else:
+			es = es_list[i]
+		
+		newT = T
+		
+		#
+		# Inner loop: go over the edges we truncate
+		#
+		for e in es:
+			i,i_leg, j, j_leg = e_dict[e]
+			if i==v:
+				leg = i_leg
+				v1 = j
+				leg1 = j_leg
+			else:
+				leg = j_leg
+				v1 = i
+				leg1 = i_leg
+			
+			newT,R = local_enviless_truncation(newT, leg, eps)
+			
+			# 
+			# If truncation happened then also truncate the corresponding leg
+			# of the tensor we are contracted with.
+			#
+			if R is not None:
+				T1 = newT_list[v1]
+				newT1 = contract_leg(T1, R, leg1)
+				newT_list[v1] = newT1
+			
+		newT_list[v] = newT
+			
+		
+	return newT_list
+	
+
+	
+	
+
 	
 #
 # ---------------------------  apply_2local_gate -----------------------
@@ -376,6 +844,7 @@ def apply_2local_gate(T_list, e_list,  e_dict, w_dict, g, e, \
 	
 	"""
 	
+	EPS = 1e-8
 	
 	if Dmax is None:
 		Dmax = 1000000
@@ -483,8 +952,36 @@ def apply_2local_gate(T_list, e_list,  e_dict, w_dict, g, e, \
 	sh = R12.shape
 	
 	R12 = R12.reshape([sh[0]*sh[1], sh[2]*sh[3]])
+
+
+	R12a = R12
+	converged = False
+	dround = 1
+	while not converged:
 		
-	U, s, V = svd(R12, full_matrices=False)
+		converged = True
+		
+		try:
+			U,s,V = svd(R12a, full_matrices=False)
+			
+		except:
+			print(f"Warnning: LinAlgError occured in BPSU.apply_2local_gate while "\
+				f"trying to perform svd. Adding a small "\
+				f"random perturbation and trying again (round {dround}).")
+			
+			N = np.random.normal(size=R12.shape)
+			N = N/norm(N, ord=2)
+			R12a = R12 + EPS*N*norm(R12, ord=2)
+			dround += 1
+			converged = False
+			
+		if dround==20:
+			print("\n\n")
+			print("Error --- unable to converge after 20 tries... quitting\n")
+			exit(1)
+	
+	
+
 	
 	D_full = len(s)
 	
@@ -516,12 +1013,16 @@ def apply_2local_gate(T_list, e_list,  e_dict, w_dict, g, e, \
 			# normalize it by the overall L2 norm
 			psums = psums/psums[0]
 			
-			# Find the place where we need to truncate
-			i = np.where(psums<eps**2)[0][0]
 			
+			# Find the place where we need to truncate
+			psums_loc = np.where(psums<eps**2)[0]
+			if psums_loc.shape[0]>0:
+				i = psums_loc[0]
 
-			if Dmax>i:
-				Dmax = i
+				if Dmax>i:
+					Dmax = i
+		
+		
 		
 		#
 		# Re-define the unitaries U,V and the weights s to contain only
@@ -641,6 +1142,641 @@ def apply_2local_gate(T_list, e_list,  e_dict, w_dict, g, e, \
 	
 	return T_list, w_dict, truncation_error
 	
+
+	
+#
+# ---------------------  apply_2local_gate_notrunc   -------------------
+#
+
+def apply_2local_gate_notrunc(T_list, e_list,  e_dict, g, e):
+		
+	r"""
+	
+	Given a TN (not in the Vidal gauge), apply a 2-body gate g on the 
+	tensors of a given edge *without* truncation. Consequently, the 
+	bond dimension between the two sites increases.
+	
+	
+	Input Parameters:
+	------------------
+	
+	T_list, e_list, e_dict --- The description of the TN
+	
+	g    --- The 2-local gate, given as [i1,j1; i2,j2] where j1,j2 are 
+	         the ket legs and i1,i2 are the bra legs.
+	      
+  e    --- The label of the edge on which the gate is acting
+           note that e=(i,j) where i<j
+  
+          
+  Output:
+  --------
+  
+  T_list --- Tensors of the updated TN.
+  
+	
+	"""
+	
+	TRUNC_THRESH = 1e-8
+	
+	
+	#
+	# Locate the vertices of the edge e=(i1,i2) and their tensors T1, T2
+	#
+	
+	i1,leg1, i2,leg2 = e_dict[e]
+		
+	T1 = T_list[i1]
+	T2 = T_list[i2]
+	
+	D = T1.shape[leg1+1]  # Original dimension of the common leg
+	d1 = T1.shape[0]  # physical leg T1
+	d2 = T2.shape[0]  # physical leg T2
+	
+	
+	# -----------------------------------------------------------------
+	# 2. Reshape T1, T2 into matrices, where the first leg is the fusion 
+	#    of all non-participating legs, and the second is (d,D), where 
+	#    d is the physical leg and D is the common leg
+	# -----------------------------------------------------------------
+	
+	M1, T1_shape = gather_ext_legs(T1, leg1)
+	M2, T2_shape = gather_ext_legs(T2, leg2)
+	
+	#
+	# Seprate the d, D legs
+	#
+	M1 = M1.reshape([M1.shape[0], d1, D])  # M1 shape: [D1_rest, d1, D]
+	M2 = M2.reshape([M2.shape[0], d1, D])  # M2 shape: [D2_rest, d2, D]
+	
+	#
+	# Separate g into g1 and g2 using SVD. Truncate very small singular
+	# values in order to save in enganglement cost
+	#
+	
+	sh = g.shape
+	gmat = g.reshape([sh[0]*sh[1], sh[2]*sh[3]])
+	
+	U,s,V = np.linalg.svd(gmat, full_matrices=False)
+	thresh = s[0]*TRUNC_THRESH
+		
+	if s[-1]<thresh:
+		i = np.where(s<thresh)[0][0]
+	else:
+		i=s.shape[0]
+		print("got max i=",i)
+	
+	s=s[:i]
+	g1 = U[:,:i]@diag(sqrt(s))
+	g2 = diag(sqrt(s))@V[:i,:]
+	
+	Dg = g1.shape[1]
+	
+	g1 = g1.reshape([sh[0],sh[1], Dg]) # g1 shape: [i1,j1,Dg]
+	g2 = g2.reshape([Dg, sh[2],sh[3]]) # g2 shape: [Dg, i2,j2]
+	
+	#
+	# Contract M1 + g1:  d1 <--> j1
+	#
+	
+	M1 = tensordot(M1, g1, axes=([1],[1])) 
+	
+	#
+	# Now M1 shape is: [D1_rest, D, i1, Dg]
+	# We move it to [D1_rest, i1, D*Dg]
+	#
+	
+	M1 = M1.transpose([0,2,1,3])
+	sh = M1.shape
+	M1 = M1.reshape([sh[0],sh[1], -1])
+	
+	#
+	# Contract M2 + g2:  d2 <--> j2
+	#
+	
+	M2 = tensordot(M2, g2, axes=([1],[2])) 
+	
+	#
+	# Now M2 shape is: [D2_rest, D, Dg, i2]
+	# We move it to [D2_rest, i2, D*Dg]
+	#
+	
+	M2 = M2.transpose([0,3,1,2])
+	sh = M2.shape
+	M2 = M2.reshape([sh[0],sh[1], -1])
+	
+	DDg = M2.shape[2]
+	
+	T1_shape[-1] = DDg
+	T2_shape[-1] = DDg
+	
+	T1 = M1.reshape(T1_shape)
+	T2 = M2.reshape(T2_shape)
+	
+	
+	# T1 shape: other-legs, d1, D
+	# T2 shape: other-legs, d2, D
+	
+	
+	# -------------------------------------------------
+	# 11. Re-arrange the legs of T1, T2
+	# -------------------------------------------------
+	
+	sh = T1.shape
+	L = len(T1.shape)
+	perm = [L-2] + list(range(leg1)) + [L-1] + list(range(leg1,L-2))
+	T1 = T1.transpose(perm)
+	
+	sh = T2.shape
+	L = len(T2.shape)
+	perm = [L-2] + list(range(leg2)) + [L-1] + list(range(leg2,L-2))
+	T2 = T2.transpose(perm)
+	
+	
+	# -----------------------------------------------------------
+	# 13. Update T1, T2, w in the T_list, w_dict list/dictionary
+	# -----------------------------------------------------------
+		
+	T_list[i1] = T1
+	T_list[i2] = T2
+
+	
+	return T_list
+
+
+#
+# ---------------------  apply_PEPO_to_PEPS   -------------------
+#
+
+def apply_PEPO_to_PEPS(T_list, T_PEPO_list):
+	
+	"""
+	
+	The PEPO tensor has legs [d_bra, d_ket, DP_0, DP_1, ...]
+	
+	When acting on a PEPS tensor with legs [d, D_0, D_1, ...]
+	we contract d_ket with d
+	
+	
+	"""
+	
+	newT_list = []
+	
+	for i,T in enumerate(T_list):
+		
+		TP = T_PEPO_list[i]
+		
+		sh_T = T.shape
+		sh_TP = TP.shape
+		
+		k = len(sh_T)-1  # number of virtual legs
+		
+		newT = tensordot(TP, T, axes=([1],[0]))
+		
+		#
+		#                0    1    2            k      k+1
+		# newT has legs [d, DP_0, DP_1, ..., DP_{k-1}, D_0, ..., D_{k-1}]
+		#
+		# we permute it to [d; D_0,DP_0; D_1,DP_1; ...]
+		#
+		
+		perm = [0]
+		sh_fused = [sh_TP[0]]
+		for i in range(k):
+			perm     = perm + [k+1+i,i+1]
+			sh_fused = sh_fused + [ sh_T[i+1]*sh_TP[i+2] ]
+			
+		newT = newT.transpose(perm)
+		newT = newT.reshape(sh_fused)
+		
+		newT_list.append(newT)
+		
+	return newT_list
+		
+		
+		
+
+
+
+
+#
+# --------------------------  truncate_weights  -----------------------
+#
+def truncate_weights(w_dict, Dmax=None, L2thresh=None):
+	
+	"""
+	
+	Given a dictionary of Vidal gauge weights (one at the middle of
+	every edge), truncate them according to Dmax or L_2 threshold:
+	
+	Looking at the singular values of an edge, we truncate at bond which 
+	is the min of:
+	1) Dmax
+	2) The point Dthresh aftter which the accumulated mass of the 
+	   *square* of the singular values is smaller than L2thresh**2
+	   
+	Input Parameters:
+	------------------
+	
+	w_dict --- A dictionary holding the Vidal gauge singualr values of
+	           each edge. Here the key is the edge index, and the value
+	           is an array of singular values
+	           
+	Dmax   --- Maximal bond dimension (ignore if None)
+	
+	L2thresh --- The L_2 threshold: if given then truncate at the point
+	             where the accumulated mass of the squares is < L2thresh**2
+	             
+	Output:
+	-------
+	
+	A dictionary with the truncated weights.
+	
+	
+	"""
+
+	log = False
+
+	if Dmax is None and L2thresh is None:
+		return w_dict.copy(), 0
+
+	trunc_w_dict = {}
+	
+	truncation_error=0
+	
+	for e in w_dict.keys():
+		
+		w = w_dict[e]
+		
+		#
+		# Find the D where we need to truncate the weights. By default,
+		# we start with the maximal value of D. If L2thresh is given 
+		# and/or Dmax is given --- we take the minimal value of D we can
+		# from either of them.
+		#
+		
+		D = w.shape[0]
+		w2 = w**2
+		
+		Dthresh=None
+		if L2thresh is not None:
+			#
+			# If L2thresh is given, then we truncate the weights where
+			# the normalized accumulated sum of their squares is smaller 
+			# than L2thresh**2
+			#
+				
+			psums = np.cumsum(w2[::-1])
+			psums = psums[::-1]
+
+			# normalize it by the overall L2 norm
+			psums = psums/psums[0]
+			
+			# Find the place where we need to truncate
+			psums_loc = np.where(psums<L2thresh**2)[0]
+			
+			if psums_loc.shape[0]>0:
+				Dthresh = psums_loc[0]
+			
+				if Dthresh<D:
+					D = Dthresh
+
+		if Dmax is not None:
+			if Dmax<D:
+				D = Dmax
+		
+		trunc_w_dict[e] = w[:D]
+		
+		if log:
+			print(f"Truncating e={e}: w={w}  trunc_w={trunc_w_dict[e]}")
+		
+		#
+		# Calculate the truncation error
+		#
+		if D<w.shape[0]:
+			truncation_error += sqrt( sum(w2[D:])/sum(w2) )
+		
+	return trunc_w_dict, truncation_error
+				
+
+
+#
+# ------------------------   BP_compress   -----------------------------
+#
+
+def BP_compress(TN_params, m_list, Dmax=None, L2thresh=None):
+	
+	"""
+	
+	Given a TN and a set of converged BP messages, compress the TN using 
+	BPSU framework:
+	
+	1) Use the BP fix-point messages to move to the Vidal gauge
+	
+	2) Truncate the Vidal weights
+	
+	Note that this truncation is optimal when the underlying graph is
+	a tree, generalizing the MPS case.
+	
+	The truncation is done using to min of two possible criterias:
+	Dmax (maximal bond dimension) or L2thresh --- a limit on the accumulated
+	mass of the square of the weights. See the doc in the truncate_weights 
+	function for more details.
+	
+	Input Parameters:
+	------------------
+	TN_params --- A dictionary holding the TN data
+	
+	m_list    --- A list of the converged BP messages
+	
+	Dmax      --- A possible maximal bond-dim
+	
+	L2thresh  --- A possible L_2 thereshold for truncation (truncate
+	              at the point where the normalized accumulated sum of the
+	              *square* of the weight
+	              
+	Output:
+	--------
+	T_list    --- The list of updated truncated tensors
+	trunc_err --- The truncation error
+	
+	
+	"""
+	
+	log = True
+	
+
+	#
+	# Extract the TN params and the BP params
+	#
+	T_list = TN_params['T_list']
+	e_dict = TN_params['e_dict']
+
+	#
+	# Move to a Vidal gauge
+	#
+	
+	gT_list, w_dict = BP_gauging(T_list, e_dict, m_list)
+	
+	#
+	# Truncate the Vidal weights
+	#
+	trunc_w_dict, trunc_err = truncate_weights(w_dict, Dmax, L2thresh)
+	
+	#
+	# Merge them back into the TN
+	#
+	T_list = merge_SU_weights(gT_list, e_dict, trunc_w_dict)
+		
+	return T_list, trunc_err
+			
+	
+#
+# ----------------------  PEPO_to_PEPS  --------------------------------
+#
+
+def PEPO_to_PEPS(TP_list):
+	"""
+	
+	Turn a PEPO tensor list into a PEPS tensor list by fusing the ket and
+	bra physical legs into one leg
+	
+	"""
+	TP_ket_list = []
+	for i, TP in enumerate(TP_list):
+		sh = list(TP.shape)
+		sh2 = [sh[0]*sh[1]] + sh[2:]
+		
+		TP_ket = TP.reshape(sh2)
+		TP_ket_list.append(TP_ket)
+		
+	return TP_ket_list
+
+
+#
+# -------------------------  PEPS_to_PEPO  -----------------------------
+#
+
+def PEPS_to_PEPO(TP_ket_list):
+	"""
+	
+	Turn a PEPS tensor list into a PEPO tensor list by un-fusing the 
+	'physical' into a pair of (ket,bra) legs.
+	
+	"""
+	
+	TP_list = []
+	for i, TP_ket in enumerate(TP_ket_list):
+		sh = list(TP_ket.shape)
+		D2 = sh[0]
+		D = int(sqrt(D2)+1e-7)
+		sh2 = [D,D] + sh[1:]
+		
+		TP = TP_ket.reshape(sh2)
+		TP_list.append(TP)
+		
+	return TP_list
+	
+
+
+
+
+#
+# ---------------------------  peps_dist  -------------------------------
+#
+def peps_dist(T_list1, T_list2, e_list, e_dict):
+	"""
+	
+	Calculate the "distance" between two PEPS states 1-|<psi1|psi2>|. The
+	overlap is calculated by calculating contracting the two PEPSes along
+	the physical legs and then calculating the Bethe free energy of the 
+	resultant TN (using BP).
+	
+	This function is used mainly for debugging purposes.
+	
+	Input Parameters:
+	-----------------
+	T_list1, T_list2 --- The tensor lists of the two TNs
+	
+	e_list, d_dict --- The common TN structure
+	
+	Output:
+	-------
+	The "distance" 1-|<psi1|psi2>|
+	
+	
+	
+	
+	"""
+	
+	#
+	# ~~~~~~~~~~~~~~~~~~~~~~~~~  fuse_tensor  ~~~~~~~~~~~~~~~~
+	#
+	
+	def fuse_tensor(Ta, Tb):
+		
+		"""
+		Internal function two fuse to identical PEPS tensors along their
+		physical leg. This is used when calculating the inner product
+		between two PEPS TNs.
+		
+		We conjugate Ta, so that the resultant tensor is Ta^* \cdot Tb
+		
+		"""
+
+		n = len(Ta.shape)
+
+		T2 = tensordot(conj(Ta),Tb, axes=([0],[0]))
+
+		#
+		# Permute the legs:
+		# [D1, D2, ..., D1^*, D2^*, ...] ==> [D1, D1^*, D2, D2^*, ...]
+		#
+		perm = []
+		for i in range(n-1):
+			perm = perm + [i, i+n-1]
+
+		T2 = T2.transpose(perm)
+
+		#
+		# Fuse the ket-bra pairs: [D1, D1^*, D2, D2^*, ...] ==> [D1^2, D2^2, ...]
+		#
+
+		dims = [Ta.shape[i]*Tb.shape[i] for i in range(1,n)]
+
+		T2 = T2.reshape(dims)
+
+		return T2
+
+		
+	#
+	# ~~~~~~~~~~~~~~~~~~~~~~~~~  peps_inp  ~~~~~~~~~~~~~~~~
+	#
+	def peps_inp(T_list1, T_list2, e_list, e_dict):
+		r"""
+		  Internal function to calculate the inner-product between 
+		  two PEPS TNs.
+		"""
+		n = len(T_list1)
+		
+		T_list = []
+		for i in range(n):
+			T = fuse_tensor(T_list1[i], T_list2[i])
+			T_list.append(T)
+
+			
+		m_list, err, iter_no = qbp(T_list, e_list, e_dict, initial_m='U', \
+				max_iter=n+2, delta=1e-15)
+				
+		inp = get_Bethe_free_energy(m_list, T_list, e_list, e_dict)
+		
+		return exp(-inp)
+
+	
+	#
+	# To calculate the overlap we calculate
+	# |<psi1|psi2>|/ sqrt(|<psi1|psi1>\cdot<psi2|psi2>|)
+	#
+	
+	I11 = abs(peps_inp(T_list1, T_list1, e_list, e_dict))
+	I12 = abs(peps_inp(T_list1, T_list2, e_list, e_dict))
+	I22 = abs(peps_inp(T_list2, T_list2, e_list, e_dict))
+	
+	ovlap = I12/sqrt(I22*I11)
+	
+	
+	return 1-ovlap
+
+
+#
+# ----------------------  BP_compress_PEPO  ----------------------------
+#
+
+def BP_compress_PEPO(TP_list, e_list, e_dict, L2thresh=1e-9, \
+	BP_max_iter=None, BP_delta=None, BP_damping=None):
+		
+	r"""
+	
+	Uses BP + Vidal gauge to compress a PEPO. When the underlying PEPO 
+	graph is a tree, the compression is optimal.
+	
+	The algorithm essentially fuses the two physical PEPO legs into one 
+	leg, thereby turning it into a PEPS. Then it uses BP_compress on it.
+	
+	Input Parameters:
+	-----------------
+	TP_list --- List of PEPO tensors. Each tensor is of the form
+	            T[d,d, D_0, D_1, ...], where d are the physical legs
+	            
+	e_list, e_dict --- list + dictionary holding the TN structure
+	
+	L2thresh --- A L2 threshold for the compression (the normalized
+	             mass of squared singular values we are allowed to throw)
+	             
+	BP_max_iter, BP_delta, BP_damping --- optional BP parameters
+                
+               
+	
+	"""
+	
+	log = False
+	
+	if log:
+		print("\n\n")
+		print(f"Entering BP_compress_PEPO with L2thresh={L2thresh}...\n")
+	
+	#
+	# First, we turn the PEPO tensors to ket tensors, thereby getting 
+	# a PEPS
+	#
+	TP_ket_list =  PEPO_to_PEPS(TP_list)
+	
+	#
+	# Now we run BP on the PEPS
+	#
+	if BP_max_iter is None:
+		BP_max_iter = len(TP_ket_list) + 1
+		
+	if BP_delta is None:
+		BP_delta = 1e-9
+		
+	if BP_damping is None:
+		BP_damping = 0
+
+	if log:
+		print(f"Running BP...\n")
+		
+	m_list, err, iter_no = qbp(TP_ket_list, e_list, e_dict, initial_m='U', \
+			max_iter=BP_max_iter, delta=BP_delta, damping=BP_damping)
+
+	if log:
+		print(f"BP ended after {iter_no} iterations with BP-err={err:.6g}\n")
+	
+	#
+	# Compress the PEPS
+	#
+	TN_params = {}
+	TN_params['T_list'] = TP_ket_list
+	TN_params['e_list'] = e_list
+	TN_params['e_dict'] = e_dict
+	
+	TP_ket_list1, trunc_err = BP_compress(TN_params, m_list, Dmax=None, 
+		L2thresh=L2thresh)
+		
+	if log:
+		print(f"BP compressed the PEPO with err={trunc_err:.6g}\n")
+		
+		d = peps_dist(TP_ket_list, TP_ket_list1, e_list, e_dict)
+		print("**** COMPRESSION Distance: ", d, "\n")
+	#
+	# Turn it back into a PEPO
+	#
+	TP_list = PEPS_to_PEPO(TP_ket_list1)
+	
+	
+	
+	return TP_list, trunc_err
+		
 	
 #
 # -------------------------  local_2RDMs  ------------------------------
