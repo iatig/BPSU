@@ -50,6 +50,11 @@
 #     first turning it to a PEPS and then running BP_compress().
 #
 #
+# 9-Jul-2025: Normalize the output tensors in BP_gauging according
+#             to their L_2 norm (before it was just the weights that
+#             were normalized)
+#
+#
 #
 #=======================================================================
 
@@ -390,6 +395,8 @@ def BP_gauging(T_list, e_dict, m_list):
 	We are following "Gauging tensor networks with belief propagation",  
 	Joseph Tindall and Matt Fishman, SciPost Phys. 15, 222 (2023) here.
 	
+	Both output tensors & weights are locally normalized by the L_2 norm.
+	
 	Input Parameters:
 	-----------------
 	T_list --- The list of tensors that make up the TN
@@ -427,10 +434,10 @@ def BP_gauging(T_list, e_dict, m_list):
 			gauged_T_list[vj], j_leg, m_list[vi][vj], m_list[vj][vi])
 			
 		# Normalize the weights (according to L_2 norm)
-		w_e = w_e/sqrt(sum(w_e**2))
+		w_e = w_e/norm(w_e)
 		
-		gauged_T_list[vi] = new_Ti
-		gauged_T_list[vj] = new_Tj
+		gauged_T_list[vi] = new_Ti/norm(new_Ti)
+		gauged_T_list[vj] = new_Tj/norm(new_Tj)
 		
 		w_dict[e] = w_e
 		
@@ -1046,6 +1053,7 @@ def apply_2local_gate(T_list, e_list,  e_dict, w_dict, g, e, \
 	#
 	# Normalize the final SU weights by the L_2 norm
 	#
+
 	s = s/sqrt(sum(s**2))
 	
 		
