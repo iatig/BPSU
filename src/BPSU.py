@@ -54,7 +54,12 @@
 #             to their L_2 norm (before it was just the weights that
 #             were normalized)
 #
+# 9-Jul-2025: Add Dmax parameter to BP_compress_PEPO
 #
+# 10-Jul-2025: Add the functions direct_apply_2local_gate, 
+#              apply_gate_to_PEPS, apply_gate_to_PEPO. Add the normalize
+#              flag to BP_compress and BP_compress_PEPO functions. Add 
+#              Dmax parameter to BP_compress_PEPO function.
 #
 #=======================================================================
 
@@ -101,6 +106,7 @@ def sqrt_message(m):
 	# The eigenvalues threshold: ignore the space of eigenvalues smaller 
 	# than that.
 	#
+
 	
 	thresh = evals[-1]*PINV_THRESH
 	i = np.where(evals>thresh)[0][0]
@@ -144,8 +150,8 @@ def sqrt_message2(m):
 	#
 	# Self test the sqrt messages
 	#
-	TEST_CORRECTNESS = False
-	EPS_TEST=1e-8
+	TEST_CORRECTNESS = True
+	EPS_TEST=1e-10
 	
 	EPS = 1e-12
 	
@@ -321,8 +327,11 @@ def edge_BP_gauging(T1, leg1, T2, leg2, m12, m21):
 	#       with the derivation in Tinder et al, we use m12.T so that
 	#       the first index is the bra and the second index is the ket.
 	#
+	
 	m12_sq, m12inv_sq = sqrt_message2(m12.T)
 	m21_sq, m21inv_sq = sqrt_message2(m21.T)
+#	m12_sq, m12inv_sq = sqrt_message(m12.T)
+#	m21_sq, m21inv_sq = sqrt_message(m21.T)
 	
 	
 	
@@ -1151,7 +1160,158 @@ def apply_2local_gate(T_list, e_list,  e_dict, w_dict, g, e, \
 	return T_list, w_dict, truncation_error
 	
 
+#
+# -------------------   direct_apply_2local_gate   ---------------------
+#
+def direct_apply_2local_gate(T1, T2, leg1, leg2, g):
+	r"""
 	
+	Apply a 2-local gate g on two tensors T1, T2 that are connected by 
+	a common edge. The result is two new tensors newT1, newT2 with 
+	a larger bond dimension along the common edge.
+	
+	Note: no truncation is performed.
+	
+	Input Parameters:
+	------------------
+	T1, T2     --- The input tensors. Each tensor is of the form
+	               [d, D0, D1, D2, ...] where d is the physical leg
+	           
+	leg1, leg2 --- The location of the common edge in T1, T2. The index
+								does not count the physical leg. So leg1=0 means that
+								D0 is the common leg.
+								
+	g          --- The 2-local gate, given as [i1,j1; i2,j2] where 
+	               j1,j2 are the ket legs (contracted with the physical 
+	               legs of T1, T2) and i1,i2 are the bra legs.
+                 
+  
+  Output:
+  -------
+  
+  newT1, newT2 --- The updated tensors
+                 
+	
+	"""
+	
+	TRUNC_THRESH = 1e-8
+
+	# -----------------------------------------------------------------
+	# 1. Find the physical bond dimensions of T1, T2 and the bond 
+	#    dimension of the edge that connects them
+	# -----------------------------------------------------------------
+	
+	
+	D = T1.shape[leg1+1]  # Original dimension of the common leg
+	d1 = T1.shape[0]      # physical leg T1
+	d2 = T2.shape[0]      # physical leg T2
+	
+	
+	# -----------------------------------------------------------------
+	# 2. Reshape T1, T2 into matrices, where the first leg is the fusion 
+	#    of all non-participating legs, and the second is (d,D), where 
+	#    d is the physical leg and D is the common leg
+	# -----------------------------------------------------------------
+	
+	M1, T1_shape = gather_ext_legs(T1, leg1)
+	M2, T2_shape = gather_ext_legs(T2, leg2)
+	
+	#
+	# Seprate the d, D legs
+	#
+	M1 = M1.reshape([M1.shape[0], d1, D])  # M1 shape: [D1_rest, d1, D]
+	M2 = M2.reshape([M2.shape[0], d1, D])  # M2 shape: [D2_rest, d2, D]
+	
+	#
+	# Separate g into g1 and g2 using SVD. Truncate very small singular
+	# values in order to save in enganglement cost
+	#
+	
+	sh = g.shape
+	gmat = g.reshape([sh[0]*sh[1], sh[2]*sh[3]])
+	
+	U,s,V = np.linalg.svd(gmat, full_matrices=False)
+	thresh = s[0]*TRUNC_THRESH
+		
+	if s[-1]<thresh:
+		i = np.where(s<thresh)[0][0]
+	else:
+		i=s.shape[0]
+		print("got max i=",i)
+	
+	s=s[:i]
+	g1 = U[:,:i]@diag(sqrt(s))
+	g2 = diag(sqrt(s))@V[:i,:]
+	
+	Dg = g1.shape[1]
+	
+	g1 = g1.reshape([sh[0],sh[1], Dg]) # g1 shape: [i1,j1,Dg]
+	g2 = g2.reshape([Dg, sh[2],sh[3]]) # g2 shape: [Dg, i2,j2]
+	
+	#
+	# Contract M1 + g1:  d1 <--> j1
+	#
+	
+	M1 = tensordot(M1, g1, axes=([1],[1])) 
+	
+	#
+	# Now M1 shape is: [D1_rest, D, i1, Dg]
+	# We move it to [D1_rest, i1, D*Dg]
+	#
+	
+	M1 = M1.transpose([0,2,1,3])
+	sh = M1.shape
+	M1 = M1.reshape([sh[0],sh[1], -1])
+	
+	#
+	# Contract M2 + g2:  d2 <--> j2
+	#
+	
+	M2 = tensordot(M2, g2, axes=([1],[2])) 
+	
+	#
+	# Now M2 shape is: [D2_rest, D, Dg, i2]
+	# We move it to [D2_rest, i2, D*Dg]
+	#
+	
+	M2 = M2.transpose([0,3,1,2])
+	sh = M2.shape
+	M2 = M2.reshape([sh[0],sh[1], -1])
+	
+	DDg = M2.shape[2]
+	
+	T1_shape[-1] = DDg
+	T2_shape[-1] = DDg
+	
+	newT1 = M1.reshape(T1_shape)
+	newT2 = M2.reshape(T2_shape)
+	
+	
+	# newT1 shape: other-legs, d1, D
+	# newT2 shape: other-legs, d2, D
+	
+	
+	# -------------------------------------------------
+	# 11. Re-arrange the legs of newT1, newT2
+	# -------------------------------------------------
+	
+	sh = newT1.shape
+	L = len(newT1.shape)
+	perm = [L-2] + list(range(leg1)) + [L-1] + list(range(leg1,L-2))
+	newT1 = newT1.transpose(perm)
+	
+	sh = newT2.shape
+	L = len(newT2.shape)
+	perm = [L-2] + list(range(leg2)) + [L-1] + list(range(leg2,L-2))
+	newT2 = newT2.transpose(perm)
+	
+	return newT1, newT2
+	
+	
+	
+	
+
+
 #
 # ---------------------  apply_2local_gate_notrunc   -------------------
 #
@@ -1310,6 +1470,187 @@ def apply_2local_gate_notrunc(T_list, e_list,  e_dict, g, e):
 
 	
 	return T_list
+
+
+
+#
+# ---------------------- apply_gate_to_PEPS  -----------------------
+#
+
+def apply_gate_to_PEPS(T_list, e_list,  e_dict, g, i=None, e=None):
+	r"""
+	
+	Applies a gate to a PEPS TN *without* any truncation. The gate can
+	be either 1-local or 2-local. In the first case, a site location i
+	must be given, whereas in the second case and edge index e is given.
+	
+	After the gate is applied, and updated T_list is returned.
+	
+	Input Parameters:
+	-----------------
+	T_list, e_list, e_dict --- TN parameters
+	
+	g --- The gate to be applied.
+	
+	i --- A site location (when g is 1-local)
+	
+	e --- An edge index (when g is 2-local)
+	
+	Output:
+	-------
+	T_list --- Updated T_list
+	
+	
+	"""
+		
+	#
+	# First, make sure that either i or e is given.
+	#
+	if (i is None and e is None) or (i is not None and e is not None):
+		print("Error in apply_gate_to_PEPS: either i or e must be given "\
+			"(they cannot be both None and they cannot be both not None)\n")
+		exit(1)
+		
+	if i is not None:
+		mode = '1-local'
+	else:
+		mode = '2-local'
+		
+	
+	if mode == '1-local':
+		#
+		# --------------------  1-local gate  ----------------------------
+		#
+		T = T_list[i]
+		
+		T = tensordot(g, T, axes=([1],[0]))
+			
+		T_list[i] = T
+		
+	if mode == '2-local':
+		
+		#
+		# --------------------  2-local gate  ----------------------------
+		#
+		
+		#
+		# Locate the vertices of the edge e=(i1,i2) and their tensors T1, T2
+		#
+		
+		i1,leg1, i2,leg2 = e_dict[e]
+			
+		T1 = T_list[i1]
+		T2 = T_list[i2]
+		
+		newT1, newT2 = direct_apply_2local_gate(T1, T2, leg1, leg2, g)
+		
+		T_list[i1] = newT1
+		T_list[i2] = newT2
+	
+	return T_list
+
+
+
+
+#
+# ---------------------- apply_gate_to_PEPO  -----------------------
+#
+
+def apply_gate_to_PEPO(T_list, e_list,  e_dict, gket=None, gbra=None, \
+	i=None, e=None):
+		
+	#
+	# Make sure that either i or e is given.
+	#
+	if (i is None and e is None) or (i is not None and e is not None):
+		print("Error in apply_gate_to_PEPO: either i or e must be given "\
+			"(they cannot be both None and they cannot be both not None)\n")
+		exit(1)
+		
+	if i is not None:
+		mode = '1-local'
+	else:
+		mode = '2-local'
+		
+	
+	if mode == '1-local':
+		T = T_list[i]
+		
+		if gket is not None:
+			T = tensordot(gket, T, axes=([1],[0]))
+			
+		if gbra is not None:
+			T = tensordot(gbra, T, axes=([1],[1]))
+			
+			# permute the 0 <-> 1 legs
+			perm = list(range(len(T.shape)))
+			perm[0] = 1
+			perm[1] = 0
+			T = T.transpose(perm)
+			
+		T_list[i] = T
+		
+	
+	if mode == '2-local':
+		#
+		# Locate the vertices of the edge e=(i1,i2) and their tensors T1, T2
+		#
+		
+		i1,leg1, i2,leg2 = e_dict[e]
+			
+		T1 = T_list[i1]
+		T2 = T_list[i2]
+		
+		if gket is not None:
+			#
+			# We invoke the direct_apply_2local_gate as if T1, T2 are PEPS 
+			# tensors. To account for the extra bra leg we pass
+			# leg1 -> leg1+1, leg2 -> leg2+1
+			#
+			
+			newT1, newT2 = direct_apply_2local_gate(T1, T2, leg1+1, leg2+1, gket)
+			
+		else:
+			newT1 = T1
+			newT2 = T2
+			
+		if gbra is not None:
+			#
+			# In such case we first permute the physical bra and ket legs
+			# and then use the same steps as in the ket case.
+			#
+			
+			perm1 = list(range(len(newT1.shape)))
+			perm1[0]=1
+			perm1[1]=0
+			
+			perm2 = list(range(len(newT2.shape)))
+			perm2[0]=1
+			perm2[1]=0
+			
+			newT1 = newT1.transpose(perm1)
+			newT2 = newT2.transpose(perm2)
+
+			newT1, newT2 = direct_apply_2local_gate(newT1, newT2, \
+				leg1+1, leg2+1, gbra)
+				
+			#
+			# Return the ket/bra legs to their original position
+			#
+			
+			newT1 = newT1.transpose(perm1)
+			newT2 = newT2.transpose(perm2)
+			
+		
+		
+		T_list[i1] = newT1
+		T_list[i2] = newT2
+
+	return T_list
+
+
+			
+		
 
 
 #
@@ -1472,7 +1813,7 @@ def truncate_weights(w_dict, Dmax=None, L2thresh=None):
 # ------------------------   BP_compress   -----------------------------
 #
 
-def BP_compress(TN_params, m_list, Dmax=None, L2thresh=None):
+def BP_compress(TN_params, m_list, Dmax=None, L2thresh=None, normalize=True):
 	
 	"""
 	
@@ -1526,6 +1867,8 @@ def BP_compress(TN_params, m_list, Dmax=None, L2thresh=None):
 	
 	gT_list, w_dict = BP_gauging(T_list, e_dict, m_list)
 	
+	print("leg-2 weights: ", w_dict['leg-2'])
+	
 	#
 	# Truncate the Vidal weights
 	#
@@ -1535,6 +1878,14 @@ def BP_compress(TN_params, m_list, Dmax=None, L2thresh=None):
 	# Merge them back into the TN
 	#
 	T_list = merge_SU_weights(gT_list, e_dict, trunc_w_dict)
+	
+	#
+	# Optionally, normalize the TN (using L_2 norm)
+	#
+	
+	if normalize:
+		for i, T in enumerate(T_list):
+			T_list[i] = T/norm(T)
 		
 	return T_list, trunc_err
 			
@@ -1623,7 +1974,7 @@ def peps_dist(T_list1, T_list2, e_list, e_dict):
 	
 	def fuse_tensor(Ta, Tb):
 		
-		"""
+		r"""
 		Internal function two fuse to identical PEPS tensors along their
 		physical leg. This is used when calculating the inner product
 		between two PEPS TNs.
@@ -1700,8 +2051,8 @@ def peps_dist(T_list1, T_list2, e_list, e_dict):
 # ----------------------  BP_compress_PEPO  ----------------------------
 #
 
-def BP_compress_PEPO(TP_list, e_list, e_dict, L2thresh=1e-9, \
-	BP_max_iter=None, BP_delta=None, BP_damping=None):
+def BP_compress_PEPO(TP_list, e_list, e_dict, Dmax=None, L2thresh=1e-9,
+	normalize=True, BP_max_iter=None, BP_delta=None, BP_damping=None):
 		
 	r"""
 	
@@ -1717,6 +2068,8 @@ def BP_compress_PEPO(TP_list, e_list, e_dict, L2thresh=1e-9, \
 	            T[d,d, D_0, D_1, ...], where d are the physical legs
 	            
 	e_list, e_dict --- list + dictionary holding the TN structure
+	
+	Dmax     --- The maximal bond dim (
 	
 	L2thresh --- A L2 threshold for the compression (the normalized
 	             mass of squared singular values we are allowed to throw)
@@ -1768,8 +2121,8 @@ def BP_compress_PEPO(TP_list, e_list, e_dict, L2thresh=1e-9, \
 	TN_params['e_list'] = e_list
 	TN_params['e_dict'] = e_dict
 	
-	TP_ket_list1, trunc_err = BP_compress(TN_params, m_list, Dmax=None, 
-		L2thresh=L2thresh)
+	TP_ket_list1, trunc_err = BP_compress(TN_params, m_list, Dmax=Dmax, 
+		L2thresh=L2thresh, normalize=normalize)
 		
 	if log:
 		print(f"BP compressed the PEPO with err={trunc_err:.6g}\n")
