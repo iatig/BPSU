@@ -61,6 +61,12 @@
 #              flag to BP_compress and BP_compress_PEPO functions. Add 
 #              Dmax parameter to BP_compress_PEPO function.
 #
+# 15-Jul-2025: Added the lazy-compress functionality. This includes
+#              adding the functions lazy_PEPS_compression, 
+#              lazy_PEPO_compression, and the functions on which they
+#              rely: lazy_edge_truncation, lazy_sqrt_message.
+#       
+#
 #=======================================================================
 
 
@@ -262,6 +268,229 @@ def contract_leg(T, g, leg):
 	
 	return newT
 	
+
+#
+# ------------------------  lazy_sqrt_message  ----------------------
+#
+def lazy_sqrt_message(m):
+	"""
+	
+	Find the square root of a BP message to be then used in the lazy
+	compression.
+	
+	We do not need an Hermitian square root. So if m is the BP message, 
+	which is an SPD, then we diagonalize it
+	
+	m = U \lambda U^\dagger 
+	
+	and then return sqrt(m) := \sqrt(\lambda) U^\dagger
+	
+	
+	
+	"""
+	
+	ZERO_THRESH = 1e-14
+	
+	#
+	# Diagonalize
+	#
+	evals, U = np.linalg.eigh(m)
+	
+	#
+	# The eigenvalues threshold: ignore the space of eigenvalues smaller 
+	# than that.
+	#
+	
+	thresh = evals[-1]*ZERO_THRESH
+	i = np.where(evals>thresh)[0][0]
+	evals_red = evals[i:]
+	U_red = U[:,i:]
+	
+	# 
+	# Calculate m^{1/2}: m = M_sq^\dagger \cdot M_sq
+	#
+	
+	M_sq = diag(sqrt(evals_red))@conj(U_red.T)
+	
+	return M_sq
+
+	
+	
+
+#
+# ------------------------  lazy_edge_truncation  ----------------------
+#
+
+def lazy_edge_truncation(T1, leg1, T2, leg2, m12, m21, \
+	L2thresh=None, Dmax=None):
+		
+	r"""
+	
+	Perform a "lazy edge truncation", following the method of 
+	
+	T. Begušić, J. Gray, and G. K.-L. Chan, 
+	“Fast and converged classical simulations of evidence for the 
+	utility of quantum computing before fault tolerance,” 
+	Science Advances, vol. 10, no. 3, p. eadk4321, 2024, arXiv:2308.05077
+	
+	It is also explained in more details in 5480/BPtruncation4.pdf 
+	
+	Input Parameters:
+	------------------
+	T1, leg1 --- The first tensor and the index of the leg connecting 
+	             to the other tensor. 
+	             
+	             Note: if T_1 shape is [d, D_0, D_1, D_2, ...]
+	                   then leg_1=1 will truncate the D_1 leg
+	                   
+	T2, leg2 --- Same but for the second tensor
+	
+	m12, m21 --- The T1->T2 BP message and the T2->T1 message
+	
+	L2thresh --- A L_2 truncation threshold. This means that we normalize
+	             the Vidal weights so that their L_2 norm is 1, and then 
+	             we truncate at the point where the *accumulated sum*
+	             is < L2thresh.
+	             
+	Dmax     --- Maximal bond dimension.
+	
+	If both Dmax and L2thresh are given, we truncate at the smallest 
+	effective bond (so that both requirements are fulfilled)
+	
+
+	"""
+	
+	DEFAULT_L2THRESH = 1e-12
+	POS_THRESH = 1e-14  # discard any singular values smaller than that
+	
+	#
+	# Calculate R_1, R_2, the squares of m12, m21
+	#
+	
+	
+	R1 = lazy_sqrt_message(m12)
+	R2 = lazy_sqrt_message(m21)
+	
+	#
+	# Calculate M = R_1\cdot R_2^T and SVD it
+	#
+	
+	M = R1@R2.T
+	
+	M1 = M
+	converged = False
+	dround = 1
+	while not converged:
+		
+		converged = True
+		
+		try:
+			U,s,V = svd(M1, full_matrices=False)
+			
+		except:
+			print(f"Warnning: LinAlgError occured in BPSU.lazy_edge_truncation while "\
+				f"trying to perform svd. Adding a small "\
+				f"random perturbation and trying again (round {dround}).")
+			
+			N = np.random.normal(size=M.shape)
+			N = N/norm(N, ord=2)
+			M1 = M + EPS*N*norm(M, ord=2)
+			dround += 1
+			converged = False
+			
+		if dround==20:
+			print("\n\n")
+			print("Error --- SVD  unable to converge in "\
+				f"BPSU.lazy_edge_truncation  after 20 tries... quitting\n")
+			exit(1)
+	
+	
+	#
+	# First, discard any singular values that are smaller than 
+	# |M|*POS_THRESH
+	#
+		
+	good_locations = np.where(s>=s[0]*POS_THRESH)[0]
+	
+	s = s[:(good_locations[-1]+1)]
+
+	#
+	# Now truncate the weights according to L2thresh and Dmax (if given).
+	#
+	# We find the D where we need to truncate the weights. By default,
+	# we start with the maximal value of D. If L2thresh is given 
+	# and/or Dmax is given --- we take the minimal value of D we can
+	# from either of them.
+	#
+	
+	D = s.shape[0]
+	s2 = s**2
+	
+	Dthresh=None
+	
+	if L2thresh is None:
+		L2thresh = DEFAULT_L2THRESH
+	
+	if L2thresh is not None:
+		#
+		# If L2thresh is given, then we truncate the weights where
+		# the normalized accumulated sum of their squares is smaller 
+		# than L2thresh**2
+		#
+			
+		psums = np.cumsum(s2[::-1])
+		psums = psums[::-1]
+
+		# normalize it by the overall L2 norm
+		psums = psums/psums[0]
+				
+		# Find the place where we need to truncate
+		psums_loc = np.where(psums<L2thresh**2)[0]
+		
+		if psums_loc.shape[0]>0:
+			Dthresh = psums_loc[0]
+		
+			if Dthresh<D:
+				D = Dthresh
+
+	if Dmax is not None:
+		if Dmax<D:
+			D = Dmax
+
+	trunc_s = s[:D]
+	
+
+	#
+	# truncate U, V to match trunc_s
+	#
+	U = U[:,:D]
+	V = V[:D, :]
+	
+	#
+	# Calculate the (normalized) L_2 truncation error
+	#
+	
+	err = sqrt( sum(s2[D:])/sum(s2) )
+	
+	#
+	# Now calculate P_1, P_2
+	# 
+	
+	s_factor = diag(1/sqrt(trunc_s))
+	
+	P1 = R2.T@conj(V.T)@s_factor
+	P2 = R1.T@conj(U)@s_factor
+	
+	#
+	# Truncate T_1, T_2 by contracting P_1, P_2 to their common legs
+	#
+	
+	newT1 = contract_leg(T1, P1, leg1)
+	
+	newT2 = contract_leg(T2, P2, leg2)
+	
+	return newT1, newT2, err
+
 
 #
 # ------------------------  edge_BP_gauging  ---------------------------
@@ -1867,7 +2096,6 @@ def BP_compress(TN_params, m_list, Dmax=None, L2thresh=None, normalize=True):
 	
 	gT_list, w_dict = BP_gauging(T_list, e_dict, m_list)
 	
-	print("leg-2 weights: ", w_dict['leg-2'])
 	
 	#
 	# Truncate the Vidal weights
@@ -2138,6 +2366,141 @@ def BP_compress_PEPO(TP_list, e_list, e_dict, Dmax=None, L2thresh=1e-9,
 	
 	return TP_list, trunc_err
 		
+
+
+
+#
+# ----------------------  lazy_PEPS_compression  ----------------------------
+#
+
+def lazy_PEPS_compression(T_list, e_list, e_dict, Dmax=None, L2thresh=1e-9,
+	normalize=True, BP_max_iter=None, BP_delta=None, BP_damping=None):
+		
+	r"""
+	
+	Uses BP to perform a "lazy PEPS compression" of the entire TN. This
+	is explained in:
+	
+	T. Begušić, J. Gray, and G. K.-L. Chan, 
+	“Fast and converged classical simulations of evidence for the 
+	utility of quantum computing before fault tolerance,” 
+	Science Advances, vol. 10, no. 3, p. eadk4321, 2024, arXiv:2308.05077
+	
+	It is also explained in more details in 5480/BPtruncation4.pdf 
+	
+	Essentially, we run the BP, and the on each edge we use the two 
+	opposite converged BP messages to find two "projectors" P_i, P_j
+	which truncate the bond. The actual truncation is done in the
+	lazy_edge_truncation function.
+	
+	
+	Input Parameters:
+	-----------------
+	T_list --- List of PEPS tensors.
+	            
+	e_list, e_dict --- list + dictionary holding the TN structure
+	
+	Dmax     --- The maximal bond dim 
+	
+	L2thresh --- A L2 threshold for the compression (the normalized
+	             mass of squared singular values we are allowed to throw)
+	             
+	normalize --- Whether to normalize the truncated tensors after 
+	              truncation
+	             
+	BP_max_iter, BP_delta, BP_damping --- optional BP parameters
+                
+               
+	
+	"""
+	
+	log = False
+	
+	if log:
+		print("\n\n")
+		print(f"Entering lazy_PEPS_compression with L2thresh={L2thresh} "\
+			f"and Dmax={Dmax}...\n")
+	
+
+	if Dmax is None and L2thresh is None:
+		return T_list, 0
+
+	
+	#
+	# Run BP on the PEPS and obtain the converged messages
+	#
+	if BP_max_iter is None:
+		BP_max_iter = len(TP_ket_list) + 1
+		
+	if BP_delta is None:
+		BP_delta = 1e-9
+		
+	if BP_damping is None:
+		BP_damping = 0
+
+	if log:
+		print(f"lazy_PEPS_compression: Running BP...\n")
+		
+	m_list, err, iter_no = qbp(T_list, e_list, e_dict, initial_m='U', \
+			max_iter=BP_max_iter, delta=BP_delta, damping=BP_damping)
+
+	if log:
+		print(f"lazy_PEPS_compression: BP ended after {iter_no} "\
+			f"iterations with BP-err={err:.6g}\n")
+	
+	total_err=0
+	
+	#
+	# Main loop: go over all TN edges, and truncate each edge using the 
+	#            two BP messages on it
+	#
+	for e in e_dict.keys():
+		
+		i, i_leg, j, j_leg = e_dict[e]
+		
+		Ti = T_list[i]
+		Tj = T_list[j]
+		
+		m_ij = m_list[i][j]
+		m_ji = m_list[j][i]
+		
+		# Truncate the edge, defining two new tensors at sites i,j
+		newTi, newTj, err = lazy_edge_truncation(Ti, i_leg, Tj, j_leg,\
+			m_ij, m_ji, L2thresh, Dmax)
+			
+		total_err += err
+		
+		if normalize:
+			newTi = newTi/norm(newTi)
+			newTj = newTj/norm(newTj)
+		
+		T_list[i] = newTi
+		T_list[j] = newTj
+		
+	if log:
+		print(f"lazy_PEPS_compression: total L_2 error: {total_err:.6g}")
+		
+	return T_list, total_err
+	
+	
+#
+# ----------------------  lazy_PEPO_compression  ----------------------------
+#
+
+def lazy_PEPO_compression(TP_list, e_list, e_dict, Dmax=None, L2thresh=1e-9,
+	normalize=True, BP_max_iter=None, BP_delta=None, BP_damping=None):
+		
+	TP_ket_list = PEPO_to_PEPS(TP_list)
+	
+	TP_ket_list, err = lazy_PEPS_compression(TP_ket_list, e_list, e_dict,\
+		Dmax=Dmax, L2thresh=L2thresh, normalize=normalize, \
+		BP_max_iter=BP_max_iter, BP_delta=BP_delta, BP_damping=BP_damping)
+		
+	TP_list = PEPS_to_PEPO(TP_ket_list)
+	
+	return TP_list, err
+		
+	
 	
 #
 # -------------------------  local_2RDMs  ------------------------------
