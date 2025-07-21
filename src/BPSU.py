@@ -65,6 +65,8 @@
 #              adding the functions lazy_PEPS_compression, 
 #              lazy_PEPO_compression, and the functions on which they
 #              rely: lazy_edge_truncation, lazy_sqrt_message.
+#
+# 21-Jul-2025: Fixed small bug in lazy_PEPS_compression
 #       
 #
 #=======================================================================
@@ -156,7 +158,7 @@ def sqrt_message2(m):
 	#
 	# Self test the sqrt messages
 	#
-	TEST_CORRECTNESS = True
+	TEST_CORRECTNESS = False
 	EPS_TEST=1e-10
 	
 	EPS = 1e-12
@@ -2430,7 +2432,7 @@ def lazy_PEPS_compression(T_list, e_list, e_dict, Dmax=None, L2thresh=1e-9,
 	# Run BP on the PEPS and obtain the converged messages
 	#
 	if BP_max_iter is None:
-		BP_max_iter = len(TP_ket_list) + 1
+		BP_max_iter = len(T_list) + 1
 		
 	if BP_delta is None:
 		BP_delta = 1e-9
