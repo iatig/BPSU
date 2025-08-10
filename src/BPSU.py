@@ -68,7 +68,10 @@
 #
 # 21-Jul-2025: Fixed small bug in lazy_PEPS_compression
 #       
-#
+# 10-Aug-2025: Added some comments, increased EPS, EPS_TEST in 
+#              sqrt_message2 since now we use the Vidal gauge more for
+#              regularization rather than actually fulfilling the gauge
+#              equations. 
 #=======================================================================
 
 
@@ -147,21 +150,34 @@ def sqrt_message2(m):
 	the smallest values by EPS*(largest e.v.).
 	
 	We do not want to use the Penrose inverse because that would mean 
-	we will not create a fully invertable matrix. But we need the matrix
-	to be fully invertable, for otherwise the BP-assited Vidal gauge will
-	suffer from severe inaccuracies. Therefore, we simply pad the smallest
-	eigenvalues and make them larger, instead of removing them.
+	we will not create a fully invertible matrix. But we need the matrix
+	to be fully invertible, for otherwise the BP-assited Vidal gauge will
+	not be an actual gauge, i.e., it will change the underlying quantum 
+	state. So there's always a tradeoff between how much you preserve the
+	underlying quantum state and how much the resultant TN satisfies the
+	canonical equations. 
+	
+	If the Vidal gauge is used only for sake of numerical stability, then
+	it is better to increase EPS --- going for numerical stabilility in 
+	favour of canonicality. 
+	
 	
 	
 	"""
+
+	#
+	# Inversion tolerance. We change any e.v. with relative size<EPS
+	# to EPS, thereby making the matrix invertible. 
+	#
+	EPS = 1e-10
+
 	
 	#
 	# Self test the sqrt messages
 	#
 	TEST_CORRECTNESS = False
-	EPS_TEST=1e-10
+	EPS_TEST=1e-8
 	
-	EPS = 1e-12
 	
 	#
 	# Diagonalize (in a robust way)
@@ -275,7 +291,7 @@ def contract_leg(T, g, leg):
 # ------------------------  lazy_sqrt_message  ----------------------
 #
 def lazy_sqrt_message(m):
-	"""
+	r"""
 	
 	Find the square root of a BP message to be then used in the lazy
 	compression.
@@ -1468,7 +1484,6 @@ def direct_apply_2local_gate(T1, T2, leg1, leg2, g):
 		i = np.where(s<thresh)[0][0]
 	else:
 		i=s.shape[0]
-		print("got max i=",i)
 	
 	s=s[:i]
 	g1 = U[:,:i]@diag(sqrt(s))
@@ -1623,7 +1638,6 @@ def apply_2local_gate_notrunc(T_list, e_list,  e_dict, g, e):
 		i = np.where(s<thresh)[0][0]
 	else:
 		i=s.shape[0]
-		print("got max i=",i)
 	
 	s=s[:i]
 	g1 = U[:,:i]@diag(sqrt(s))
