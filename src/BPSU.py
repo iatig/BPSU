@@ -72,6 +72,11 @@
 #              sqrt_message2 since now we use the Vidal gauge more for
 #              regularization rather than actually fulfilling the gauge
 #              equations. 
+#
+# 22-Sep-2025: Fixed a crucial bug in lazy_edge_truncation: call
+#              lazy_sqrt_message with m.T instead of m. In addition
+#              small cosmetic changes.
+#
 #=======================================================================
 
 
@@ -82,10 +87,10 @@ import scipy
 from numpy.linalg import norm, svd, qr
 
 from numpy import zeros, ones, array, tensordot, sqrt, diag, conj, \
-	eye, trace, pi, exp, isnan
+	eye, trace, pi, exp, isnan, vdot
 
 
-from qbp import qbp, get_Bethe_free_energy
+from qbp import qbp, get_Bethe_free_energy, adj_vert
 
 HERMICITY_ERR = 1e-4
 PINV_THRESH = 1e-12
@@ -255,7 +260,9 @@ def contract_leg(T, g, leg):
 	r"""
 	
 	Given a tensor T and a matrix g, return a new tensor T' which is 
-	the contraction of g along the T's leg (indicated by leg)
+	the contraction of g along the T's leg (indicated by leg).
+	
+	The leg of T is contracted to the *first* leg of g.
 	
 	If alpha_i is the index of the i'th leg, then the new tensor
 	is given by
@@ -329,6 +336,7 @@ def lazy_sqrt_message(m):
 	#
 	
 	M_sq = diag(sqrt(evals_red))@conj(U_red.T)
+#	M_sq = U_red@diag(sqrt(evals_red))@conj(U_red.T)
 	
 	return M_sq
 
@@ -378,19 +386,40 @@ def lazy_edge_truncation(T1, leg1, T2, leg2, m12, m21, \
 
 	"""
 	
+	#
+	# See if any truncation is actually needed...
+	#
+	
+	if Dmax is not None and L2thresh is None:
+		if T1.shape[leg1+1] <= Dmax:
+			return T1.copy(), T2.copy(), 0
+	
+	
 	DEFAULT_L2THRESH = 1e-12
 	POS_THRESH = 1e-14  # discard any singular values smaller than that
 	
 	#
 	# Calculate R_1, R_2, the squares of m12, m21
 	#
+	# NOTE: we use m12.T and m21.T because by definition for matrix
+	#       mij[al,bet] that represents the i->j message, al is the
+	#       ket leg and bet is the bra leg. Therefore, as 
+	#       R = lazy_sqrt_message(m) satisfies m = R^\dagger\cdot R,
+	#       then if we call lazy_sqrt_message(m.T), we get R s.t.,
+	#       m.T = R^\dagger\cdot R
+	#       And so the bet index of R[al,bet] is identical to that of
+	#       m.T[al,bet], which is identical to m[bet,al] --- So, we needed
+	#       we multiply by the ket leg.
+	#       
+	#
 	
 	
-	R1 = lazy_sqrt_message(m12)
-	R2 = lazy_sqrt_message(m21)
+	
+	R1 = lazy_sqrt_message(m12.T)
+	R2 = lazy_sqrt_message(m21.T)
 	
 	#
-	# Calculate M = R_1\cdot R_2^T and SVD it
+	# Calculate M = R_1\cdot R_2^T and SVD it: M = UsV
 	#
 	
 	M = R1@R2.T
@@ -403,7 +432,7 @@ def lazy_edge_truncation(T1, leg1, T2, leg2, m12, m21, \
 		converged = True
 		
 		try:
-			U,s,V = svd(M1, full_matrices=False)
+			U,s_orig,V = svd(M1, full_matrices=False)
 			
 		except:
 			print(f"Warnning: LinAlgError occured in BPSU.lazy_edge_truncation while "\
@@ -428,9 +457,9 @@ def lazy_edge_truncation(T1, leg1, T2, leg2, m12, m21, \
 	# |M|*POS_THRESH
 	#
 		
-	good_locations = np.where(s>=s[0]*POS_THRESH)[0]
+	good_locations = np.where(s_orig>=s_orig[0]*POS_THRESH)[0]
 	
-	s = s[:(good_locations[-1]+1)]
+	s = s_orig[:(good_locations[-1]+1)]
 
 	#
 	# Now truncate the weights according to L2thresh and Dmax (if given).
@@ -442,6 +471,7 @@ def lazy_edge_truncation(T1, leg1, T2, leg2, m12, m21, \
 	#
 	
 	D = s.shape[0]
+	D = T1.shape[leg1+1]
 	s2 = s**2
 	
 	Dthresh=None
@@ -489,23 +519,22 @@ def lazy_edge_truncation(T1, leg1, T2, leg2, m12, m21, \
 	#
 	
 	err = sqrt( sum(s2[D:])/sum(s2) )
-	
 	#
 	# Now calculate P_1, P_2
 	# 
 	
-	s_factor = diag(1/sqrt(trunc_s))
+	inv_s_factor = diag(1/sqrt(trunc_s))
 	
-	P1 = R2.T@conj(V.T)@s_factor
-	P2 = R1.T@conj(U)@s_factor
+	P1 = R2.T@conj(V.T)@inv_s_factor
+	P2 = R1.T@conj(U)@inv_s_factor
 	
 	#
 	# Truncate T_1, T_2 by contracting P_1, P_2 to their common legs
 	#
 	
 	newT1 = contract_leg(T1, P1, leg1)
-	
 	newT2 = contract_leg(T2, P2, leg2)
+	
 	
 	return newT1, newT2, err
 
@@ -658,7 +687,7 @@ def BP_gauging(T_list, e_dict, m_list):
 	T_list --- The list of tensors that make up the TN
 	
 	e_dict --- The edges dictionary. The key is the edge name. The value
-	           for an edge e=(i,j) is a 4-taple (i, leg_i, j, leg_j) 
+	           for an edge e=(i,j) is a 4-tuple (i, leg_i, j, leg_j) 
 	           
 	m_list --- The converged BP messages. For every neighboring vertices
 	           i,j, m_list[i][j] is the converged i=>j BP  message.
@@ -667,7 +696,8 @@ def BP_gauging(T_list, e_dict, m_list):
 	Output:
 	---------
 	
-	T_list --- The updated T_list
+	gauged_T_list --- The updated T_list
+	
 	w_dict --- A dictionary holding the weights of the Vidal gauge for
 	           ever edge e.
 	
@@ -2378,12 +2408,9 @@ def BP_compress_PEPO(TP_list, e_list, e_dict, Dmax=None, L2thresh=1e-9,
 	#
 	TP_list = PEPS_to_PEPO(TP_ket_list1)
 	
-	
-	
 	return TP_list, trunc_err
-		
-
-
+	
+	
 
 #
 # ----------------------  lazy_PEPS_compression  ----------------------------
@@ -2409,10 +2436,14 @@ def lazy_PEPS_compression(T_list, e_list, e_dict, Dmax=None, L2thresh=1e-9,
 	which truncate the bond. The actual truncation is done in the
 	lazy_edge_truncation function.
 	
+	Note: The compression is done *in-place* (to save space) --- so the 
+	      input T_list is updated.
+	
 	
 	Input Parameters:
 	-----------------
-	T_list --- List of PEPS tensors.
+	T_list --- List of PEPS tensors. The update (compression) is done
+	           *in-place*
 	            
 	e_list, e_dict --- list + dictionary holding the TN structure
 	
@@ -2425,14 +2456,24 @@ def lazy_PEPS_compression(T_list, e_list, e_dict, Dmax=None, L2thresh=1e-9,
 	              truncation
 	             
 	BP_max_iter, BP_delta, BP_damping --- optional BP parameters
+	
+	
+	Output:
+	-------
+	
+	T_list  --- The compressed tensors list (this is actually the same
+	            list as the input list, since the compression is done 
+	            in-place.
+	            
+	err     --- Total normalized L_2 compression error
                 
                
 	
 	"""
 	
-	log = False
+	elog = True
 	
-	if log:
+	if elog:
 		print("\n\n")
 		print(f"Entering lazy_PEPS_compression with L2thresh={L2thresh} "\
 			f"and Dmax={Dmax}...\n")
@@ -2454,13 +2495,13 @@ def lazy_PEPS_compression(T_list, e_list, e_dict, Dmax=None, L2thresh=1e-9,
 	if BP_damping is None:
 		BP_damping = 0
 
-	if log:
+	if elog:
 		print(f"lazy_PEPS_compression: Running BP...\n")
 		
 	m_list, err, iter_no = qbp(T_list, e_list, e_dict, initial_m='U', \
 			max_iter=BP_max_iter, delta=BP_delta, damping=BP_damping)
 
-	if log:
+	if elog:
 		print(f"lazy_PEPS_compression: BP ended after {iter_no} "\
 			f"iterations with BP-err={err:.6g}\n")
 	
@@ -2477,6 +2518,7 @@ def lazy_PEPS_compression(T_list, e_list, e_dict, Dmax=None, L2thresh=1e-9,
 		Ti = T_list[i]
 		Tj = T_list[j]
 		
+		
 		m_ij = m_list[i][j]
 		m_ji = m_list[j][i]
 		
@@ -2490,12 +2532,13 @@ def lazy_PEPS_compression(T_list, e_list, e_dict, Dmax=None, L2thresh=1e-9,
 			newTi = newTi/norm(newTi)
 			newTj = newTj/norm(newTj)
 		
+		
 		T_list[i] = newTi
 		T_list[j] = newTj
 		
-	if log:
+	if elog:
 		print(f"lazy_PEPS_compression: total L_2 error: {total_err:.6g}")
-		
+
 	return T_list, total_err
 	
 	
