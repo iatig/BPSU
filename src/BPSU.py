@@ -77,7 +77,7 @@
 #              lazy_sqrt_message with m.T instead of m. In addition
 #              small cosmetic changes.
 #
-# 24-Nov-2025: in merge_SU_weights(), make sure that the merged tensors
+# 24-Nov-2025: In merge_SU_weights(), make sure that the merged tensors
 #              have the same precision (DP or SP) as the input tensors.
 #
 #=======================================================================
