@@ -77,6 +77,9 @@
 #              lazy_sqrt_message with m.T instead of m. In addition
 #              small cosmetic changes.
 #
+# 24-Nov-2025: in merge_SU_weights(), make sure that the merged tensors
+#              have the same precision (DP or SP) as the input tensors.
+#
 #=======================================================================
 
 
@@ -610,7 +613,6 @@ def edge_BP_gauging(T1, leg1, T2, leg2, m12, m21):
 #	m21_sq, m21inv_sq = sqrt_message(m21.T)
 	
 	
-	
 	#
 	# Create the matrix in the middle
 	#
@@ -715,9 +717,10 @@ def BP_gauging(T_list, e_dict, m_list):
 	for e in e_dict.keys():
 		
 		vi, i_leg, vj, j_leg = e_dict[e]
-				
+		
 		new_Ti, w_e, new_Tj = edge_BP_gauging(gauged_T_list[vi], i_leg, \
 			gauged_T_list[vj], j_leg, m_list[vi][vj], m_list[vj][vi])
+
 			
 		# Normalize the weights (according to L_2 norm)
 		w_e = w_e/norm(w_e)
@@ -761,7 +764,7 @@ def merge_SU_weights(T_list, e_dict, w_dict):
 		D_tensor = merged_T_list[i1].shape[leg1+1]
 		
 		sqw = sqrt(abs(w))
-		sqM = zeros([D_tensor, D_w])
+		sqM = zeros([D_tensor, D_w]).astype(merged_T_list[i1].dtype)
 		sqM[:D_w,:D_w] = diag(sqw)
 		
 		T1 = contract_leg(merged_T_list[i1], sqM, leg1)
