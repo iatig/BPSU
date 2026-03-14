@@ -83,6 +83,11 @@
 # 04-Mar-2026: In lazy_PEPS_compression(), added the calculation of the
 #              simulation fidelity as defined in arXiv:2503.20870v2.
 #
+# 14-Mar-2026: Fixed a small error in lazy_edge_truncation (a line
+#              D = T1.shape[leg1+1] was probably left there by accident)
+#              and in addition add some documentation and re-arrange 
+#              the truncation logic.
+#
 # ======================================================================
 
 
@@ -366,6 +371,23 @@ def lazy_edge_truncation(T1, leg1, T2, leg2, m12, m21, \
 	Science Advances, vol. 10, no. 3, p. eadk4321, 2024, arXiv:2308.05077
 
 	It is also explained in more details in 5480/BPtruncation4.pdf
+	
+	There are two constants which are set in the function:
+	
+	1) DEFAULT_L2THRESH --- The default L2 truncation thereshold: we remove
+	                        the singular value tail at the point where
+	                        [(sum_{i>D_2} s^2_i)/s_max]^{1/2} <= L_2 thereshold
+	
+	2) POS_THRESHOLD    --- Automatically remove singular values smaller
+	                        than the maximal singular value times 
+	                        POS_THRESHOLD.
+	                        
+	                        
+	The truncation bond is determined by the minima of the following 3 bonds:
+	a) The positivity thereshold D_1
+	b) The L2 thereshold D_2  (if given)
+	c) D_max (if given)
+	
 
 	Input Parameters:
 	------------------
@@ -393,16 +415,27 @@ def lazy_edge_truncation(T1, leg1, T2, leg2, m12, m21, \
 	"""
 
 	#
-	# See if any truncation is actually needed...
+	# See if any truncation is actually needed. This can happen if 
+	# L2thresh is not given, while Dmax is given and is larger than 
+	# the bond of edge that we want to truncate.
 	#
 
 	if Dmax is not None and L2thresh is None:
 		if T1.shape[leg1+1] <= Dmax:
 			return T1.copy(), T2.copy(), 0
 
-
+	#
+	# Default L_2 truncation threshold
+	#
 	DEFAULT_L2THRESH = 1e-12
-	POS_THRESH = 1e-14  # discard any singular values smaller than that
+
+	if L2thresh is None:
+		L2thresh = DEFAULT_L2THRESH
+	
+	#
+	# Positivity threshold: discard any singular values smaller than that
+	#
+	POS_THRESH = 1e-14  
 
 	#
 	# Calculate R_1, R_2, the squares of m12, m21
@@ -419,13 +452,14 @@ def lazy_edge_truncation(T1, leg1, T2, leg2, m12, m21, \
 	#
 	#
 
-
-
 	R1 = lazy_sqrt_message(m12.T)
 	R2 = lazy_sqrt_message(m21.T)
 
 	#
 	# Calculate M = R_1\cdot R_2^T and SVD it: M = UsV
+	# We try to do it in a robust way: if numpy SVD does not converge
+	# for some reason, then add to it a small random perturbation. 
+	# Try this for at most 20 times before giving up.
 	#
 
 	M = R1@R2.T
@@ -460,7 +494,7 @@ def lazy_edge_truncation(T1, leg1, T2, leg2, m12, m21, \
 
 	#
 	# First, discard any singular values that are smaller than
-	# |M|*POS_THRESH
+	# then positivity threshold |M|*POS_THRESH
 	#
 
 	good_locations = np.where(s_orig>=s_orig[0]*POS_THRESH)[0]
@@ -470,47 +504,53 @@ def lazy_edge_truncation(T1, leg1, T2, leg2, m12, m21, \
 	#
 	# Now truncate the weights according to L2thresh and Dmax (if given).
 	#
-	# We find the D where we need to truncate the weights. By default,
-	# we start with the maximal value of D. If L2thresh is given
-	# and/or Dmax is given --- we take the minimal value of D we can
-	# from either of them.
+	# 1. We start from D that is given by the positivity threshold
+	# 2. We the calculate the L_2 truncation point, and see if it lowers
+	#    D
+	# 3. We then see if the resultant D is larger than D_max (if given), 
+	#    in which case, we set it to D_max
+	#    
 	#
 
 	D = s.shape[0]
-	D = T1.shape[leg1+1]
+	
 	s2 = s**2
 
-	Dthresh=None
+	
+	#
+	# Take care of the L_2 truncation:
+	# --------------------------------
+	#
+	# Find Dthresh --- the place where the normalized accumulated sum of 
+	# their squares is smaller than L2thresh**2. If Dthresh < D, then 
+	# set D:=Dthresh
+	#
 
-	if L2thresh is None:
-		L2thresh = DEFAULT_L2THRESH
+	psums = np.cumsum(s2[::-1])
+	psums = psums[::-1]
 
-	if L2thresh is not None:
-		#
-		# If L2thresh is given, then we truncate the weights where
-		# the normalized accumulated sum of their squares is smaller
-		# than L2thresh**2
-		#
+	# normalize it by the overall L2 norm
+	psums = psums/psums[0]
 
-		psums = np.cumsum(s2[::-1])
-		psums = psums[::-1]
+	# Find the place where we need to truncate
+	psums_loc = np.where(psums<L2thresh**2)[0]
 
-		# normalize it by the overall L2 norm
-		psums = psums/psums[0]
+	if psums_loc.shape[0]>0:
+		Dthresh = psums_loc[0]
 
-		# Find the place where we need to truncate
-		psums_loc = np.where(psums<L2thresh**2)[0]
+		if Dthresh<D:
+			D = Dthresh
 
-		if psums_loc.shape[0]>0:
-			Dthresh = psums_loc[0]
-
-			if Dthresh<D:
-				D = Dthresh
-
+	#
+	# Finally take care of Dmax. If Dmax<D ==> set D:=Dmax
+	#
 	if Dmax is not None:
 		if Dmax<D:
 			D = Dmax
 
+	#
+	# Now that we have found D, we can simply truncate
+	#
 	trunc_s = s[:D]
 
 
@@ -523,12 +563,11 @@ def lazy_edge_truncation(T1, leg1, T2, leg2, m12, m21, \
 	#
 	# Calculate the (normalized) L_2 truncation error
 	#
-
 	err = sqrt( sum(s2[D:])/sum(s2) )
+	
 	#
 	# Now calculate P_1, P_2
 	#
-
 	inv_s_factor = diag(1/sqrt(trunc_s))
 
 	P1 = R2.T@conj(V.T)@inv_s_factor
