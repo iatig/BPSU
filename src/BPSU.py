@@ -88,6 +88,11 @@
 #              and in addition add some documentation and re-arrange 
 #              the truncation logic.
 #
+# 21-Mar-2026: 1. Removed the function peps_dist() and introduced the 
+#                 functions fuse_ket_bra_tensors(), fuse_ket_bra_PEPS()
+#              2. Added documentation to apply_gate_to_PEPO()
+#              3. Added normalize_tensors flag to lazy_PEPS_compression()
+#
 # ======================================================================
 
 
@@ -1878,6 +1883,47 @@ def apply_gate_to_PEPS(T_list, e_list,  e_dict, g, i=None, e=None):
 
 def apply_gate_to_PEPO(T_list, e_list,  e_dict, gket=None, gbra=None, \
 	i=None, e=None):
+		
+	r"""
+	
+	Applies a 1-local or 2-local Kraus gate to a PEPO: 
+	
+	Given two gates gket, gbra and a PEPO rho, 
+	
+	                rho ===>  gket \cdot \rho \cdot gbra.T
+	                
+	Recall that a PEPO has the following leg structure:
+	
+	                 [d_bra, d_ket, DP_0, DP_1, ...]
+	                 
+	Therefore gket is contracted with d_bra and gbra is contracted with 
+	d_ket
+	                
+	Note: 
+	-----
+	1) We do *not* complex-conjugate gbra
+	2) gket and gbra are optional, they can be both given or just one
+	   of them.
+	   
+	Input Parameters:
+	-----------------
+	
+	T_list, e_list, e_dict --- TN params
+	
+	gket, gbra --- The ket and the bra gates.
+	               Note if g_{ij} is the matrix of a gate, the leg j
+	               is the leg that is contracted to the PEPO.
+	               
+	i, e --- Location of the gate. Only one of them can be given.
+	         If it is a single-qubit gate, then i is given.
+	         If it is a two-qubits gate, e is given.
+	         
+	Output:
+	-------
+	T_list --- The updated tensors list of the PEPO
+	
+	"""
+	
 
 	#
 	# Make sure that either i or e is given.
@@ -1897,9 +1943,15 @@ def apply_gate_to_PEPO(T_list, e_list,  e_dict, gket=None, gbra=None, \
 		T = T_list[i]
 
 		if gket is not None:
+			#
+			# Contract gket to the d-bra leg of T
+			#
 			T = tensordot(gket, T, axes=([1],[0]))
 
 		if gbra is not None:
+			#
+			# Contract gbra to the d-ket leg of T
+			#
 			T = tensordot(gbra, T, axes=([1],[1]))
 
 			# permute the 0 <-> 1 legs
@@ -1980,11 +2032,28 @@ def apply_gate_to_PEPO(T_list, e_list,  e_dict, gket=None, gbra=None, \
 def apply_PEPO_to_PEPS(T_list, T_PEPO_list):
 
 	"""
+	
+	Applies an operator A, described by a PEPO T_PEPO_list to a ket state
+	psi, described by T_list. The result is a new ket state 
+	
+	                      |psi'> = A|psi>
 
 	The PEPO tensor has legs [d_bra, d_ket, DP_0, DP_1, ...]
 
 	When acting on a PEPS tensor with legs [d, D_0, D_1, ...]
 	we contract d_ket with d
+	
+	Input Parameters:
+	-----------------
+	
+	T_list      --- The tensors list of the ket state |psi>
+
+	T_PEPO_list --- The tensors list of the PEPO operator A
+	
+	
+	Output:
+	-------
+	The resultant T_list of |psi'> = A|psi>
 
 
 	"""
@@ -2257,54 +2326,37 @@ def PEPS_to_PEPO(TP_ket_list):
 
 
 
-
-
 #
-# ---------------------------  peps_dist  -------------------------------
+# ~~~~~~~~~~~~~~~~~~~~~~~~~  fuse_ket_bra_tensors  ~~~~~~~~~~~~~~~~~~~~~
 #
-def peps_dist(T_list1, T_list2, e_list, e_dict):
-	"""
 
-	Calculate the "distance" between two PEPS states 1-|<psi1|psi2>|. The
-	overlap is calculated by calculating contracting the two PEPSes along
-	the physical legs and then calculating the Bethe free energy of the
-	resultant TN (using BP).
-
-	This function is used mainly for debugging purposes.
-
-	Input Parameters:
-	-----------------
-	T_list1, T_list2 --- The tensor lists of the two TNs
-
-	e_list, d_dict --- The common TN structure
-
-	Output:
-	-------
-	The "distance" 1-|<psi1|psi2>|
-
-
-
-
-	"""
-
-	#
-	# ~~~~~~~~~~~~~~~~~~~~~~~~~  fuse_tensor  ~~~~~~~~~~~~~~~~
-	#
-
-	def fuse_tensor(Ta, Tb):
+def fuse_ket_bra_tensors(Ta, Tb, conjB=False):
 
 		r"""
-		Internal function two fuse to identical PEPS tensors along their
-		physical leg. This is used when calculating the inner product
-		between two PEPS TNs.
-
-		We conjugate Ta, so that the resultant tensor is Ta^* \cdot Tb
+		
+		Take two PEPS tensors with the same dimensions and contract them
+		along the physical leg, producing a double-layer PEPS tensor with
+		legs bonds that are products of the individual bonds.
+		
+		Input Parameters:
+		------------------
+		Ta, Tb --- The two tensors
+		
+		conjB  --- Whether or not to complex-conjugate Tb
+		
+		
+		Output:
+		-------
+		The fused double-layer tensor
 
 		"""
 
 		n = len(Ta.shape)
 
-		T2 = tensordot(conj(Ta),Tb, axes=([0],[0]))
+		if conjB:
+			T2 = tensordot(Ta, conj(Tb), axes=([0],[0]))
+		else:
+			T2 = tensordot(Ta, Tb, axes=([0],[0]))
 
 		#
 		# Permute the legs:
@@ -2327,43 +2379,40 @@ def peps_dist(T_list1, T_list2, e_list, e_dict):
 		return T2
 
 
-	#
-	# ~~~~~~~~~~~~~~~~~~~~~~~~~  peps_inp  ~~~~~~~~~~~~~~~~
-	#
-	def peps_inp(T_list1, T_list2, e_list, e_dict):
-		r"""
-		  Internal function to calculate the inner-product between
-		  two PEPS TNs.
-		"""
-		n = len(T_list1)
+#
+# ~~~~~~~~~~~~~~~~~~~~~~~~~  fuse_ket_bra_PEPS  ~~~~~~~~~~~~~~~~~~~~~
+#
 
-		T_list = []
-		for i in range(n):
-			T = fuse_tensor(T_list1[i], T_list2[i])
-			T_list.append(T)
+def fuse_ket_bra_PEPS(T_list_a, T_list_b, conjB=False):
+	
+	r"""
+	
+	Take two PEPS psi_a, psi_b, represented by the tensor lists T_list_a, 
+	T_list_b, and creates a double-layer PEPS by contracting them along 
+	their physical leg.
+	
+	Input Parameters:
+	-----------------
+	T_list_a, T_list_b --- The tensor lists of the psi_a, psi_b PEPS
+	
+	conjB --- Whether or not to conjugate the psi_b tensor
+	
+	Output:
+	-------
+	T2_list --- The resultant double-layer PEPS
+	
+	
+	"""
+	
+	n = len(T_list_a)
+	
+	T2_list = []
+	
+	for i in range(n):
+		T2 = fuse_ket_bra_tensors(T_list_a[i], T_list_b[i], conjB)
+		T2_list.append(T2)
 
-
-		m_list, err, iter_no = qbp(T_list, e_list, e_dict, initial_m='U', \
-				max_iter=n+2, delta=1e-15)
-
-		inp = get_Bethe_free_energy(m_list, T_list, e_list, e_dict)
-
-		return exp(-inp)
-
-
-	#
-	# To calculate the overlap we calculate
-	# |<psi1|psi2>|/ sqrt(|<psi1|psi1>\cdot<psi2|psi2>|)
-	#
-
-	I11 = abs(peps_inp(T_list1, T_list1, e_list, e_dict))
-	I12 = abs(peps_inp(T_list1, T_list2, e_list, e_dict))
-	I22 = abs(peps_inp(T_list2, T_list2, e_list, e_dict))
-
-	ovlap = I12/sqrt(I22*I11)
-
-
-	return 1-ovlap
+	return T2_list
 
 
 #
@@ -2462,7 +2511,7 @@ def BP_compress_PEPO(TP_list, e_list, e_dict, Dmax=None, L2thresh=1e-9,
 #
 
 def lazy_PEPS_compression(T_list, e_list, e_dict, Dmax=None, L2thresh=1e-9,
-	normalize=True, BP_max_iter=None, BP_delta=None, BP_damping=None):
+	normalize_tensors=True, BP_max_iter=None, BP_delta=None, BP_damping=None):
 
 	r"""
 
@@ -2497,7 +2546,7 @@ def lazy_PEPS_compression(T_list, e_list, e_dict, Dmax=None, L2thresh=1e-9,
 	L2thresh --- A L2 threshold for the compression (the normalized
 	             mass of squared singular values we are allowed to throw)
 
-	normalize --- Whether to normalize the truncated tensors after
+	normalize_tensors --- Whether to normalize the truncated tensors after
 	              truncation
 
 	BP_max_iter, BP_delta, BP_damping --- optional BP parameters
@@ -2581,7 +2630,7 @@ def lazy_PEPS_compression(T_list, e_list, e_dict, Dmax=None, L2thresh=1e-9,
 		total_err += err
 		f_sim *= 1 - err**2
 
-		if normalize:
+		if normalize_tensors:
 			newTi = newTi/norm(newTi)
 			newTj = newTj/norm(newTj)
 
