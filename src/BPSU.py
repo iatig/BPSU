@@ -93,6 +93,12 @@
 #              2. Added documentation to apply_gate_to_PEPO()
 #              3. Added normalize_tensors flag to lazy_PEPS_compression()
 #
+# 5-Apr-2026: (1) Added global constants PRECISION_MODE, DP_ACCURACY,
+#             SP_ACCURACY, FP_ACCURACY, PINV_THRESH, MAX_LINALG_ROUNDS. 
+#             (2) Renamed sqrt_message2() -> sqrt_message() (and removed the 
+#             original sqrt_message(). (3) A lot of small cleanups in the
+#             truncation functions regarding the thresholds.
+#
 # ======================================================================
 
 
@@ -108,9 +114,36 @@ from numpy import zeros, ones, array, tensordot, sqrt, diag, conj, \
 
 from qbp import qbp, get_Bethe_free_energy, adj_vert
 
+
+#
+# Set the floating point precision
+#
+PRECISION_MODE = 'DP'  # Either 'DP' or 'SP'
+
+DP_ACCURACY = 1e-15
+SP_ACCURACY = 1e-7
+
+if PRECISION_MODE == 'DP':
+	FP_ACCURACY = DP_ACCURACY
+	PINV_THRESH = FP_ACCURACY*100
+	
+elif PRECISION_MODE == 'SP':
+	FP_ACCURACY = SP_ACCURACY
+	PINV_THRESH = FP_ACCURACY*10
+
+
+	
+#
+# Maximal number of trials of calling np.linalg functions like svd or
+# eigh before declaring that it does not converge and quitting.
+#
+MAX_LINALG_ROUNDS = 10
+
+	
+
 HERMICITY_ERR = 1e-4
-PINV_THRESH = 1e-12
-ROBUST_THRESH = 1e8
+ROBUST_THRESH = FP_ACCURACY*100
+
 
 
 
@@ -124,51 +157,8 @@ def sqrt_message(m):
 
 	Given a message m (which is a PSD matrix), calculate m^{1/2}, m^{-1/2}.
 
-	Do that in a robust way by first diagonalizing, and then removing
-	parts of the spectrum that are smaller than some threshold.
-
-	"""
-
-	#
-	# Diagonalize
-	#
-	evals, U = np.linalg.eigh(m)
-
-	#
-	# The eigenvalues threshold: ignore the space of eigenvalues smaller
-	# than that.
-	#
-
-
-	thresh = evals[-1]*PINV_THRESH
-	i = np.where(evals>thresh)[0][0]
-	evals_red = evals[i:]
-	U_red = U[:,i:]
-
-	#
-	# Calculate m^{1/2}, and m^{-1/2}
-	#
-	M_sq = U_red@diag(sqrt(evals_red))@conj(U_red.T)
-	Minv_sq = U_red@diag(evals_red**(-0.5))@conj(U_red.T)
-
-
-	return M_sq, Minv_sq
-
-
-
-
-#
-# ---------------------------- sqrt_message  ---------------------------
-#
-
-def sqrt_message2(m):
-
-	"""
-
-	Given a message m (which is a PSD matrix), calculate m^{1/2}, m^{-1/2}.
-
 	Do that in a robust way by first diagonalizing, and then padding
-	the smallest values by EPS*(largest e.v.).
+	the smallest values by PINV_THRESH*(largest e.v.).
 
 	We do not want to use the Penrose inverse because that would mean
 	we will not create a fully invertible matrix. But we need the matrix
@@ -186,19 +176,35 @@ def sqrt_message2(m):
 
 	"""
 
-	#
-	# Inversion tolerance. We change any e.v. with relative size<EPS
-	# to EPS, thereby making the matrix invertible.
-	#
-	EPS = 1e-10
-
 
 	#
-	# Self test the sqrt messages
+	# Set numerical accuracy constants:
+	#
+	# PERTURB_EPS: The size of a random perturbation to be added to the 
+	#              matrix if for some reason np.linalg.eigh does not 
+	#              converge.
+	# EPS_TEST:    If TEST_CORRECTNESS=True, then we check how much 
+	#              the equations 
+	#              (*) m - m^{1/2}\cdot m^{1/2} = 0
+	#              (*) m^{1/2}\cdot m^{-1/2} = I
+	#              are satisfied, up to accuracy EPS_TEST in operator norm.
+	#
+	#              If not satisfied, output a warnning message.
+	# 
+	#
+	
+	if PRECISION_MODE=='DP':
+		PERTURB_EPS = 1e-12
+		EPS_TEST=1e-8
+
+	elif PRECISION_MODE=='SP':
+		PERTURB_EPS = 1e-6
+		EPS_TEST=1e-4
+
+	#
+	# Wether or not to self-test the sqrt messages
 	#
 	TEST_CORRECTNESS = False
-	EPS_TEST=1e-8
-
 
 	#
 	# Diagonalize (in a robust way)
@@ -221,12 +227,18 @@ def sqrt_message2(m):
 				f"trying to use linalg.eigh. Adding a small "\
 				f"random perturbation and trying again (round {dround}).")
 
-			N = np.random.normal(size=(d,d))
+			N = np.random.normal(size=(d,d)).astype(m.dtype)
 			N2 = N@N.T
-			N2 = N2/norm(N2)
-			m1 = m + EPS*N2*norm(m)
+			N2 = N2/norm(N2, ord=2)
+			m1 = m + PERTURB_EPS*N2*norm(m, ord=2)
 			dround += 1
 			converged = False
+			
+			if dround>MAX_LINALG_ROUNDS:
+				print(f"Error: LinAlgError occured in BPSU.sqrt_message: did"\
+					f" not converge after {dround} attempts. Quitting!")
+				exit(1)
+				
 
 	#
 	# The eigenvalues threshold: all the eigenvalues that are smaller
@@ -247,25 +259,23 @@ def sqrt_message2(m):
 	M_sq = U@diag(sqrt(evals))@conj(U.T)
 	Minv_sq = U@diag(1/sqrt(evals))@conj(U.T)
 
-
 	if TEST_CORRECTNESS:
-		eq1 = norm(M_sq@M_sq-m)
-		eq2 = norm(M_sq@Minv_sq-eye(m.shape[0]))
-		nr_m = norm(m)
+		eq1 = norm(M_sq@M_sq-m, ord=2)
+		eq2 = norm(M_sq@Minv_sq-eye(m.shape[0]), ord=2)
+		nr_m = norm(m, ord=2)
 
 		if eq1>EPS_TEST*nr_m:
-			print("Warnning: Error in sqrt_message2: " \
+			print("Warnning: Error in sqrt_message: " \
 				f"norm(M_sq@M_sq-m)/norm(m)={eq1:.6g} > norm(m)*{EPS_TEST} "\
 				f"for norm(m)={nr_m:.6g}\n")
 
 		if eq2>EPS_TEST*nr_m:
-			print("Warnning: Error in sqrt_message2: " \
+			print("Warnning: Error in sqrt_message: " \
 				f"norm(M_sq@Minv_sq-I)={eq2:.6g} > norm(m)*{EPS_TEST} "\
 				f"for norm(m)={nr_m:.6g}\n")
 
 
 	return M_sq, Minv_sq
-
 
 
 #
@@ -330,7 +340,6 @@ def lazy_sqrt_message(m):
 
 	"""
 
-	ZERO_THRESH = 1e-14
 
 	#
 	# Diagonalize
@@ -339,10 +348,10 @@ def lazy_sqrt_message(m):
 
 	#
 	# The eigenvalues threshold: ignore the space of eigenvalues smaller
-	# than that.
+	# than PINV_THRESH * max-e.v.
 	#
 
-	thresh = evals[-1]*ZERO_THRESH
+	thresh = evals[-1]*PINV_THRESH
 	i = np.where(evals>thresh)[0][0]
 	evals_red = evals[i:]
 	U_red = U[:,i:]
@@ -352,7 +361,6 @@ def lazy_sqrt_message(m):
 	#
 
 	M_sq = diag(sqrt(evals_red))@conj(U_red.T)
-#	M_sq = U_red@diag(sqrt(evals_red))@conj(U_red.T)
 
 	return M_sq
 
@@ -430,17 +438,19 @@ def lazy_edge_truncation(T1, leg1, T2, leg2, m12, m21, \
 			return T1.copy(), T2.copy(), 0
 
 	#
-	# Default L_2 truncation threshold
+	# Set default L_2 truncation threshold and the positivity threshold.
 	#
-	DEFAULT_L2THRESH = 1e-12
+	
+	if PRECISION_MODE=='DP':
+		DEFAULT_L2THRESH = 1e-12
+		POS_THRESH = 1e-14
+	else:
+		DEFAULT_L2THRESH = 1e-6
+		POS_THRESH = 5e-7
 
 	if L2thresh is None:
 		L2thresh = DEFAULT_L2THRESH
 	
-	#
-	# Positivity threshold: discard any singular values smaller than that
-	#
-	POS_THRESH = 1e-14  
 
 	#
 	# Calculate R_1, R_2, the squares of m12, m21
@@ -484,22 +494,22 @@ def lazy_edge_truncation(T1, leg1, T2, leg2, m12, m21, \
 				f"trying to perform svd. Adding a small "\
 				f"random perturbation and trying again (round {dround}).")
 
-			N = np.random.normal(size=M.shape)
+			N = np.random.normal(size=M.shape).astype(M.dtype)
 			N = N/norm(N, ord=2)
-			M1 = M + EPS*N*norm(M, ord=2)
+			M1 = M + POS_THRESH*N*norm(M, ord=2)
 			dround += 1
 			converged = False
 
-		if dround==20:
+		if dround>MAX_LINALG_ROUNDS:
 			print("\n\n")
 			print("Error --- SVD  unable to converge in "\
-				f"BPSU.lazy_edge_truncation  after 20 tries... quitting\n")
+				f"BPSU.lazy_edge_truncation  after {MAX_LINALG_ROUNDS} tries... quitting\n")
 			exit(1)
 
 
 	#
 	# First, discard any singular values that are smaller than
-	# then positivity threshold |M|*POS_THRESH
+	# then the positivity threshold POS_THRESH
 	#
 
 	good_locations = np.where(s_orig>=s_orig[0]*POS_THRESH)[0]
@@ -641,7 +651,12 @@ def edge_BP_gauging(T1, leg1, T2, leg2, m12, m21):
 
 	"""
 
-	EPS = 1e-8
+	
+	if PRECISION_MODE=='DP':
+		PERTURB_EPS = 1e-12
+
+	elif PRECISION_MODE=='SP':
+		PERTURB_EPS = 1e-6
 
 
 	#
@@ -654,10 +669,8 @@ def edge_BP_gauging(T1, leg1, T2, leg2, m12, m21):
 	#       the first index is the bra and the second index is the ket.
 	#
 
-	m12_sq, m12inv_sq = sqrt_message2(m12.T)
-	m21_sq, m21inv_sq = sqrt_message2(m21.T)
-#	m12_sq, m12inv_sq = sqrt_message(m12.T)
-#	m21_sq, m21inv_sq = sqrt_message(m21.T)
+	m12_sq, m12inv_sq = sqrt_message(m12.T)
+	m21_sq, m21inv_sq = sqrt_message(m21.T)
 
 
 	#
@@ -686,9 +699,10 @@ def edge_BP_gauging(T1, leg1, T2, leg2, m12, m21):
 			dround += 1
 			converged = False
 
-		if dround==20:
+		if dround>MAX_LINALG_ROUNDS:
 			print("\n\n")
-			print("Error --- unable to converge after 20 tries... quitting\n")
+			print(f"Error in BPSU.edge_BP_gauging: np.linalg.svd is unable"\
+				f" to converge after {MAX_LINALG_ROUNDS} tries... quitting\n")
 			exit(1)
 
 
@@ -780,9 +794,6 @@ def BP_gauging(T_list, e_dict, m_list):
 
 
 	return gauged_T_list, w_dict
-
-
-
 
 
 
@@ -1187,7 +1198,13 @@ def apply_2local_gate(T_list, e_list,  e_dict, w_dict, g, e, \
 
 	"""
 
-	EPS = 1e-8
+	
+	if PRECISION_MODE=='DP':
+		PERTURB_EPS = 1e-12
+
+	elif PRECISION_MODE=='SP':
+		PERTURB_EPS = 1e-6
+
 
 	if Dmax is None:
 		Dmax = 1000000
@@ -1314,16 +1331,16 @@ def apply_2local_gate(T_list, e_list,  e_dict, w_dict, g, e, \
 
 			N = np.random.normal(size=R12.shape)
 			N = N/norm(N, ord=2)
-			R12a = R12 + EPS*N*norm(R12, ord=2)
+			R12a = R12 + PERTURB_EPS*N*norm(R12, ord=2)
 			dround += 1
 			converged = False
 
-		if dround==20:
+
+		if dround>MAX_LINALG_ROUNDS:
 			print("\n\n")
-			print("Error --- unable to converge after 20 tries... quitting\n")
+			print("Error in BPSU.apply_2local_gate: SVD unable to converge"\
+				f" after {MAX_LINALG_ROUNDS} tries... quitting\n")
 			exit(1)
-
-
 
 
 	D_full = len(s)
@@ -1521,7 +1538,19 @@ def direct_apply_2local_gate(T1, T2, leg1, leg2, g):
 
 	"""
 
-	TRUNC_THRESH = 1e-8
+
+	#
+	# Set TRUNC_THRESH. We automatically truncate singular values below 
+	# this threshold.
+	#
+	if PRECISION_MODE=='DP':
+		TRUNC_THRESH = 1e-9
+
+	elif PRECISION_MODE=='SP':
+		TRUNC_THRESH = 5e-7
+
+
+	
 
 	# -----------------------------------------------------------------
 	# 1. Find the physical bond dimensions of T1, T2 and the bond
@@ -1635,9 +1664,6 @@ def direct_apply_2local_gate(T1, T2, leg1, leg2, g):
 
 
 
-
-
-
 #
 # ---------------------  apply_2local_gate_notrunc   -------------------
 #
@@ -1671,7 +1697,16 @@ def apply_2local_gate_notrunc(T_list, e_list,  e_dict, g, e):
 
 	"""
 
-	TRUNC_THRESH = 1e-8
+
+	#
+	# Set TRUNC_THRESH. We automatically truncate singular values below 
+	# this threshold.
+	#
+	if PRECISION_MODE=='DP':
+		TRUNC_THRESH = 1e-9
+
+	elif PRECISION_MODE=='SP':
+		TRUNC_THRESH = 5e-7
 
 
 	#
