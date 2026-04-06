@@ -111,6 +111,11 @@
 # 6-Apr-2026: Changed the API of global_enviless_truncation(): removed
 #             the TN_params and replaced with T_list, e_list, e_dict
 #             Also: removed un-needed dependencies (like scipy)
+#
+# 6-Apr-2026: Renamed lazy_PEPS_compression() --> lazy_PEPS_truncation().
+#             Also, changed the API: removed all BP parameters, and used
+#             m_list instead for the converged BP messages, so that now 
+#             qbp is run externally. 
 # ======================================================================
 
 
@@ -1547,11 +1552,11 @@ def lazy_edge_truncation(T1, leg1, T2, leg2, m12, m21, \
 
 
 #
-# ----------------------  lazy_PEPS_compression  ----------------------------
+# ----------------------  lazy_PEPS_truncation  ----------------------------
 #
 
-def lazy_PEPS_compression(T_list, e_list, e_dict, Dmax=None, L2thresh=1e-9,
-	normalize_tensors=True, BP_max_iter=None, BP_delta=None, BP_damping=None):
+def lazy_PEPS_truncation(T_list, e_list, e_dict, m_list, Dmax=None, L2thresh=1e-9,
+	normalize_tensors=True):
 
 	r"""
 
@@ -1565,9 +1570,9 @@ def lazy_PEPS_compression(T_list, e_list, e_dict, Dmax=None, L2thresh=1e-9,
 
 	It is also explained in more details in 5480/BPtruncation4.pdf
 
-	Essentially, we run the BP, and the on each edge we use the two
-	opposite converged BP messages to find two "projectors" P_i, P_j
-	which truncate the bond. The actual truncation is done in the
+	Essentially, we use the converged BP messages (given by m_list). We 
+	take two opposite converged BP messages to find two "projectors" 
+	P_i, P_j which truncate the bond. The actual truncation is done in the
 	lazy_edge_truncation function.
 
 	Note: The compression is done *in-place* (to save space) --- so the
@@ -1580,7 +1585,10 @@ def lazy_PEPS_compression(T_list, e_list, e_dict, Dmax=None, L2thresh=1e-9,
 	           *in-place*
 
 	e_list, e_dict --- list + dictionary holding the TN structure
-
+	
+	m_list  --- A double list containing the converged BP messages (like
+	            the result of qbp). The i-->j message is stored in m[i][j]
+	
 	Dmax     --- The maximal bond dim
 
 	L2thresh --- A L2 threshold for the compression (the normalized
@@ -1618,29 +1626,6 @@ def lazy_PEPS_compression(T_list, e_list, e_dict, Dmax=None, L2thresh=1e-9,
 
 	if Dmax is None and L2thresh is None:
 		return T_list, 0
-
-
-	#
-	# Run BP on the PEPS and obtain the converged messages
-	#
-	if BP_max_iter is None:
-		BP_max_iter = len(T_list) + 1
-
-	if BP_delta is None:
-		BP_delta = 1e-9
-
-	if BP_damping is None:
-		BP_damping = 0
-
-	if elog:
-		print(f"lazy_PEPS_compression: Running BP...\n")
-
-	m_list, err, iter_no = qbp(T_list, e_list, e_dict, initial_m='U', \
-			max_iter=BP_max_iter, delta=BP_delta, damping=BP_damping)
-
-	if elog:
-		print(f"lazy_PEPS_compression: BP ended after {iter_no} "\
-			f"iterations with BP-err={err:.6g}\n")
 
 	total_err=0  # Sum of the L_2 norms of the truncations in all sites
 	
@@ -1683,26 +1668,6 @@ def lazy_PEPS_compression(T_list, e_list, e_dict, Dmax=None, L2thresh=1e-9,
 			f"total_simulation_fidelity={f_sim:.6g}")
 
 	return T_list, total_err, f_sim
-
-
-#
-# ----------------------  lazy_PEPO_compression  ----------------------------
-#
-
-def lazy_PEPO_compression(TP_list, e_list, e_dict, Dmax=None, L2thresh=1e-9,
-	normalize=True, BP_max_iter=None, BP_delta=None, BP_damping=None):
-
-	TP_ket_list = PEPO_to_PEPS(TP_list)
-
-	TP_ket_list, err = lazy_PEPS_compression(TP_ket_list, e_list, e_dict,\
-		Dmax=Dmax, L2thresh=L2thresh, normalize=normalize, \
-		BP_max_iter=BP_max_iter, BP_delta=BP_delta, BP_damping=BP_damping)
-
-	TP_list = PEPS_to_PEPO(TP_ket_list)
-
-	return TP_list, err
-
-
 
 
 
