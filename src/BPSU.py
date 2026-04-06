@@ -332,9 +332,9 @@ def PEPS_to_PEPO(TP_ket_list):
 
 
 #
-# -------------------   direct_VG_apply_2local_gate   ---------------------
+# -------------------   direct_apply_2local_gate   ---------------------
 #
-def direct_VG_apply_2local_gate(T1, T2, leg1, leg2, g):
+def direct_apply_2local_gate(T1, T2, leg1, leg2, g):
 	r"""
 
 	Apply a 2-local gate g on two tensors T1, T2 that are connected by
@@ -560,7 +560,7 @@ def apply_gate_to_PEPS(T_list, e_list,  e_dict, g, i=None, e=None):
 		T1 = T_list[i1]
 		T2 = T_list[i2]
 
-		newT1, newT2 = direct_VG_apply_2local_gate(T1, T2, leg1, leg2, g)
+		newT1, newT2 = direct_apply_2local_gate(T1, T2, leg1, leg2, g)
 
 		T_list[i1] = newT1
 		T_list[i2] = newT2
