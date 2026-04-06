@@ -107,20 +107,22 @@
 #             gathered them in 4 groups:
 #             1. General ket-bra function, 2. Applying gates to PEPS/PEPO, 
 #             3. Compression functions, 4. Vidal Gauge functions
+#
+# 6-Apr-2026: Changed the API of global_enviless_truncation(): removed
+#             the TN_params and replaced with T_list, e_list, e_dict
+#             Also: removed un-needed dependencies (like scipy)
 # ======================================================================
 
 
 
 import numpy as np
-import scipy
 
 from numpy.linalg import norm, svd, qr
 
 from numpy import zeros, ones, array, tensordot, sqrt, diag, conj, \
-	eye, trace, pi, exp, isnan, vdot
+	eye, trace, pi, exp
 
-
-from qbp import qbp, get_Bethe_free_energy, adj_vert
+from qbp import qbp
 
 
 #
@@ -1200,7 +1202,7 @@ def local_enviless_truncation(T, leg, eps):
 # ------------------   global_enviless_truncation   --------------------
 #
 
-def global_enviless_truncation(TN_params, eps, verts_list=None, \
+def global_enviless_truncation(T_list, e_list, e_dict, eps, verts_list=None, \
 	es_list=None):
 
 	r"""
@@ -1222,8 +1224,7 @@ def global_enviless_truncation(TN_params, eps, verts_list=None, \
 
 	Input Parameters:
 	-----------------
-	TN_params --- a dictionary with the parameters of the TN.
-	              Specifically, we need T_list, e_list, e_dict
+	T_list, e_list, e_dict --- The lists holding the TN
 
 	eps       --- The normalized accumulated L_2 norm that we wish
 	              to truncate.
@@ -1231,8 +1232,12 @@ def global_enviless_truncation(TN_params, eps, verts_list=None, \
 	verts_list --- An optional list of vertices we wish to truncate. If
 	               omitted then we consider all vertices
 
-	es_list    --- An optional list of lists of edges for each tensors
-	               we truncate. This should correspond to the tensors
+	es_list    --- An optional list that specify which edges we want to 
+	               truncate, in case we do not want to truncate all the 
+	               edges.
+	               
+	               This is a list of lists of edges for each tensors
+	               we truncate. It should correspond to the tensors
 	               in verts_list
 
 	Output:
@@ -1244,12 +1249,6 @@ def global_enviless_truncation(TN_params, eps, verts_list=None, \
 
 	"""
 
-	#
-	# Extract the TN params
-	#
-	T_list = TN_params['T_list']
-	e_list = TN_params['e_list']
-	e_dict = TN_params['e_dict']
 
 	n = len(T_list)
 
