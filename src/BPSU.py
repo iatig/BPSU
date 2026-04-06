@@ -10,7 +10,7 @@
 # History
 # =========================
 #
-# 18-Aug-2024: Itai  apply_2local_gate: added a the relative truncation
+# 18-Aug-2024: Itai  VG_apply_2local_gate: added a the relative truncation
 #                    error as an output parameter to
 #
 # 18-Oct-2024: Itai  Add documentation to contract_leg() function
@@ -20,19 +20,19 @@
 #   - add sqrt_message2() to have a more rubust way of taking the
 #     square of a BP message, as used in the function edge_BP_gaugin().
 #
-#   - Make edge_BP_gauging() more robust by adding a small random
+#   - Make VG_find_edge_VG() more robust by adding a small random
 #     perturbation if the SVD does not converge. Also normalize the weights according to L_2 instead of L_1
 #
 #   - add the local_enviless_truncation(), global_enviless_truncation()
 #     functions to perfrom an evnironment-free truncation of a PEPS tensor
 #
-#   - added apply_2local_gate_notrunc() function to apply 2-gates
+#   - added VG_apply_2local_gate_notrunc() function to apply 2-gates
 #     without any truncaiton
 #
 #   - Added apply_PEPO_to_PEPS() function, which applies a PEPO to a
 #     PEPS (without compression)
 #
-#   - Added truncate_weights() function that truncates a set of Vidal
+#   - Added VG_truncate_weights() function that truncates a set of Vidal
 #     weights given a Dmax and L2thresh thereshold. It is called from
 #     the BP_compress() function
 #
@@ -50,13 +50,13 @@
 #     first turning it to a PEPS and then running BP_compress().
 #
 #
-# 9-Jul-2025: Normalize the output tensors in BP_gauging according
+# 9-Jul-2025: Normalize the output tensors in VG_find_VG_from_BP according
 #             to their L_2 norm (before it was just the weights that
 #             were normalized)
 #
 # 9-Jul-2025: Add Dmax parameter to BP_compress_PEPO
 #
-# 10-Jul-2025: Add the functions direct_apply_2local_gate,
+# 10-Jul-2025: Add the functions direct_VG_apply_2local_gate,
 #              apply_gate_to_PEPS, apply_gate_to_PEPO. Add the normalize
 #              flag to BP_compress and BP_compress_PEPO functions. Add
 #              Dmax parameter to BP_compress_PEPO function.
@@ -77,7 +77,7 @@
 #              lazy_sqrt_message with m.T instead of m. In addition
 #              small cosmetic changes.
 #
-# 24-Nov-2025: In merge_SU_weights(), make sure that the merged tensors
+# 24-Nov-2025: In VG_merge_SU_weights(), make sure that the merged tensors
 #              have the same precision (DP or SP) as the input tensors.
 #
 # 04-Mar-2026: In lazy_PEPS_compression(), added the calculation of the
@@ -99,8 +99,8 @@
 #             original sqrt_message(). (3) A lot of small cleanups in the
 #             truncation functions regarding the thresholds.
 #
-# 6-Apr-2026: Removed the function apply_2local_gate_notrunc(), since
-#             its functionality is covered by direct_apply_2local_gate()
+# 6-Apr-2026: Removed the function VG_apply_2local_gate_notrunc(), since
+#             its functionality is covered by direct_VG_apply_2local_gate()
 #             and apply_gate_to_PEPS()
 #
 # 6-Apr-2026: Re-arranged the appearence order of the functions and 
@@ -116,6 +116,19 @@
 #             Also, changed the API: removed all BP parameters, and used
 #             m_list instead for the converged BP messages, so that now 
 #             qbp is run externally. 
+#
+# 6-Apr-2026: Major cleanup of the Vidal Gauge (VG) functions:
+#             1. Rename: 
+#                edge_BP_gauging      -> VG_find_edge_VG
+#                BP_gauging           -> VG_find_VG_from_BP
+#                VG_merge_SU_weights  -> VG_VG_merge_SU_weights
+#                VG_apply_2local_gate -> VG_VG_apply_2local_gate
+#                VG_truncate_weights  -> VG_VG_truncate_weights
+#             2. Remove the functions BP_compress, BP_compress_PEPO, 
+#                local_2RDMs
+#             3. Remove the qbp dependence; BPSU no longer calls qbp
+#                directly.
+#
 # ======================================================================
 
 
@@ -126,8 +139,6 @@ from numpy.linalg import norm, svd, qr
 
 from numpy import zeros, ones, array, tensordot, sqrt, diag, conj, \
 	eye, trace, pi, exp
-
-from qbp import qbp
 
 
 #
@@ -321,9 +332,9 @@ def PEPS_to_PEPO(TP_ket_list):
 
 
 #
-# -------------------   direct_apply_2local_gate   ---------------------
+# -------------------   direct_VG_apply_2local_gate   ---------------------
 #
-def direct_apply_2local_gate(T1, T2, leg1, leg2, g):
+def direct_VG_apply_2local_gate(T1, T2, leg1, leg2, g):
 	r"""
 
 	Apply a 2-local gate g on two tensors T1, T2 that are connected by
@@ -549,7 +560,7 @@ def apply_gate_to_PEPS(T_list, e_list,  e_dict, g, i=None, e=None):
 		T1 = T_list[i1]
 		T2 = T_list[i2]
 
-		newT1, newT2 = direct_apply_2local_gate(T1, T2, leg1, leg2, g)
+		newT1, newT2 = direct_VG_apply_2local_gate(T1, T2, leg1, leg2, g)
 
 		T_list[i1] = newT1
 		T_list[i2] = newT2
@@ -657,12 +668,12 @@ def apply_gate_to_PEPO(T_list, e_list,  e_dict, gket=None, gbra=None, \
 
 		if gket is not None:
 			#
-			# We invoke the direct_apply_2local_gate as if T1, T2 are PEPS
+			# We invoke the direct_VG_apply_2local_gate as if T1, T2 are PEPS
 			# tensors. To account for the extra bra leg we pass
 			# leg1 -> leg1+1, leg2 -> leg2+1
 			#
 
-			newT1, newT2 = direct_apply_2local_gate(T1, T2, leg1+1, leg2+1, gket)
+			newT1, newT2 = direct_VG_apply_2local_gate(T1, T2, leg1+1, leg2+1, gket)
 
 		else:
 			newT1 = T1
@@ -685,7 +696,7 @@ def apply_gate_to_PEPO(T_list, e_list,  e_dict, gket=None, gbra=None, \
 			newT1 = newT1.transpose(perm1)
 			newT2 = newT2.transpose(perm2)
 
-			newT1, newT2 = direct_apply_2local_gate(newT1, newT2, \
+			newT1, newT2 = direct_VG_apply_2local_gate(newT1, newT2, \
 				leg1+1, leg2+1, gbra)
 
 			#
@@ -1680,10 +1691,10 @@ def lazy_PEPS_truncation(T_list, e_list, e_dict, m_list, Dmax=None, L2thresh=1e-
 
 
 #
-# ------------------------  edge_BP_gauging  ---------------------------
+# ------------------------  VG_find_edge_VG  ---------------------------
 #
 
-def edge_BP_gauging(T1, leg1, T2, leg2, m12, m21):
+def VG_find_edge_VG(T1, leg1, T2, leg2, m12, m21):
 	r"""
 
 	Given two neighboring tensors, T1, T2, with a common edge, together
@@ -1769,7 +1780,7 @@ def edge_BP_gauging(T1, leg1, T2, leg2, m12, m21):
 			U,s,V = svd(M1, full_matrices=False)
 
 		except:
-			print(f"Warnning: LinAlgError occured in BPSU.edge_BP_gauging while "\
+			print(f"Warnning: LinAlgError occured in BPSU.VG_find_edge_VG while "\
 				f"trying to perform svd. Adding a small "\
 				f"random perturbation and trying again (round {dround}).")
 
@@ -1781,7 +1792,7 @@ def edge_BP_gauging(T1, leg1, T2, leg2, m12, m21):
 
 		if dround>MAX_LINALG_ROUNDS:
 			print("\n\n")
-			print(f"Error in BPSU.edge_BP_gauging: np.linalg.svd is unable"\
+			print(f"Error in BPSU.VG_find_edge_VG: np.linalg.svd is unable"\
 				f" to converge after {MAX_LINALG_ROUNDS} tries... quitting\n")
 			exit(1)
 
@@ -1810,10 +1821,10 @@ def edge_BP_gauging(T1, leg1, T2, leg2, m12, m21):
 
 
 #
-# ---------------------------  BP_gauging  -----------------------------
+# ---------------------------  VG_find_VG_from_BP  -----------------------------
 #
 
-def BP_gauging(T_list, e_dict, m_list):
+def VG_find_VG_from_BP(T_list, e_dict, m_list):
 	"""
 
 	Give a TN described by T_list, e_dict, together with a converged set
@@ -1859,7 +1870,7 @@ def BP_gauging(T_list, e_dict, m_list):
 
 		vi, i_leg, vj, j_leg = e_dict[e]
 
-		new_Ti, w_e, new_Tj = edge_BP_gauging(gauged_T_list[vi], i_leg, \
+		new_Ti, w_e, new_Tj = VG_find_edge_VG(gauged_T_list[vi], i_leg, \
 			gauged_T_list[vj], j_leg, m_list[vi][vj], m_list[vj][vi])
 
 
@@ -1878,10 +1889,10 @@ def BP_gauging(T_list, e_dict, m_list):
 
 
 #
-# ---------------------------  merge_SU_weights  -----------------------
+# ---------------------------  VG_merge_SU_weights  -----------------------
 #
 
-def merge_SU_weights(T_list, e_dict, w_dict):
+def VG_merge_SU_weights(T_list, e_dict, w_dict):
 
 	"""
 
@@ -1919,10 +1930,10 @@ def merge_SU_weights(T_list, e_dict, w_dict):
 
 
 #
-# ---------------------------  apply_2local_gate -----------------------
+# ---------------------------  VG_apply_2local_gate -----------------------
 #
 
-def apply_2local_gate(T_list, e_list,  e_dict, w_dict, g, e, \
+def VG_apply_2local_gate(T_list, e_list,  e_dict, w_dict, g, e, \
 	Dmax=None, eps=None):
 
 	r"""
@@ -2097,7 +2108,7 @@ def apply_2local_gate(T_list, e_list,  e_dict, w_dict, g, e, \
 			U,s,V = svd(R12a, full_matrices=False)
 
 		except:
-			print(f"Warnning: LinAlgError occured in BPSU.apply_2local_gate while "\
+			print(f"Warnning: LinAlgError occured in BPSU.VG_apply_2local_gate while "\
 				f"trying to perform svd. Adding a small "\
 				f"random perturbation and trying again (round {dround}).")
 
@@ -2110,7 +2121,7 @@ def apply_2local_gate(T_list, e_list,  e_dict, w_dict, g, e, \
 
 		if dround>MAX_LINALG_ROUNDS:
 			print("\n\n")
-			print("Error in BPSU.apply_2local_gate: SVD unable to converge"\
+			print("Error in BPSU.VG_apply_2local_gate: SVD unable to converge"\
 				f" after {MAX_LINALG_ROUNDS} tries... quitting\n")
 			exit(1)
 
@@ -2281,9 +2292,9 @@ def apply_2local_gate(T_list, e_list,  e_dict, w_dict, g, e, \
 
 
 #
-# --------------------------  truncate_weights  -----------------------
+# --------------------------  VG_truncate_weights  -----------------------
 #
-def truncate_weights(w_dict, Dmax=None, L2thresh=None):
+def VG_truncate_weights(w_dict, Dmax=None, L2thresh=None):
 
 	"""
 
@@ -2378,267 +2389,6 @@ def truncate_weights(w_dict, Dmax=None, L2thresh=None):
 			truncation_error += sqrt( sum(w2[D:])/sum(w2) )
 
 	return trunc_w_dict, truncation_error
-
-
-
-#
-# ------------------------   BP_compress   -----------------------------
-#
-
-def BP_compress(TN_params, m_list, Dmax=None, L2thresh=None, normalize=True):
-
-	"""
-
-	Given a TN and a set of converged BP messages, compress the TN using
-	BPSU framework:
-
-	1) Use the BP fix-point messages to move to the Vidal gauge
-
-	2) Truncate the Vidal weights
-
-	Note that this truncation is optimal when the underlying graph is
-	a tree, generalizing the MPS case.
-
-	The truncation is done using to min of two possible criterias:
-	Dmax (maximal bond dimension) or L2thresh --- a limit on the accumulated
-	mass of the square of the weights. See the doc in the truncate_weights
-	function for more details.
-
-	Input Parameters:
-	------------------
-	TN_params --- A dictionary holding the TN data
-
-	m_list    --- A list of the converged BP messages
-
-	Dmax      --- A possible maximal bond-dim
-
-	L2thresh  --- A possible L_2 thereshold for truncation (truncate
-	              at the point where the normalized accumulated sum of the
-	              *square* of the weight
-
-	Output:
-	--------
-	T_list    --- The list of updated truncated tensors
-	trunc_err --- The truncation error
-
-
-	"""
-
-	log = True
-
-
-	#
-	# Extract the TN params and the BP params
-	#
-	T_list = TN_params['T_list']
-	e_dict = TN_params['e_dict']
-
-	#
-	# Move to a Vidal gauge
-	#
-
-	gT_list, w_dict = BP_gauging(T_list, e_dict, m_list)
-
-
-	#
-	# Truncate the Vidal weights
-	#
-	trunc_w_dict, trunc_err = truncate_weights(w_dict, Dmax, L2thresh)
-
-	#
-	# Merge them back into the TN
-	#
-	T_list = merge_SU_weights(gT_list, e_dict, trunc_w_dict)
-
-	#
-	# Optionally, normalize the TN (using L_2 norm)
-	#
-
-	if normalize:
-		for i, T in enumerate(T_list):
-			T_list[i] = T/norm(T)
-
-	return T_list, trunc_err
-
-
-#
-# ----------------------  BP_compress_PEPO  ----------------------------
-#
-
-def BP_compress_PEPO(TP_list, e_list, e_dict, Dmax=None, L2thresh=1e-9,
-	normalize=True, BP_max_iter=None, BP_delta=None, BP_damping=None):
-
-	r"""
-
-	Uses BP + Vidal gauge to compress a PEPO. When the underlying PEPO
-	graph is a tree, the compression is optimal.
-
-	The algorithm essentially fuses the two physical PEPO legs into one
-	leg, thereby turning it into a PEPS. Then it uses BP_compress on it.
-
-	Input Parameters:
-	-----------------
-	TP_list --- List of PEPO tensors. Each tensor is of the form
-	            T[d,d, D_0, D_1, ...], where d are the physical legs
-
-	e_list, e_dict --- list + dictionary holding the TN structure
-
-	Dmax     --- The maximal bond dim (
-
-	L2thresh --- A L2 threshold for the compression (the normalized
-	             mass of squared singular values we are allowed to throw)
-
-	BP_max_iter, BP_delta, BP_damping --- optional BP parameters
-
-
-
-	"""
-
-	log = False
-
-	if log:
-		print("\n\n")
-		print(f"Entering BP_compress_PEPO with L2thresh={L2thresh}...\n")
-
-	#
-	# First, we turn the PEPO tensors to ket tensors, thereby getting
-	# a PEPS
-	#
-	TP_ket_list =  PEPO_to_PEPS(TP_list)
-
-	#
-	# Now we run BP on the PEPS
-	#
-	if BP_max_iter is None:
-		BP_max_iter = len(TP_ket_list) + 1
-
-	if BP_delta is None:
-		BP_delta = 1e-9
-
-	if BP_damping is None:
-		BP_damping = 0
-
-	if log:
-		print(f"Running BP...\n")
-
-	m_list, err, iter_no = qbp(TP_ket_list, e_list, e_dict, initial_m='U', \
-			max_iter=BP_max_iter, delta=BP_delta, damping=BP_damping)
-
-	if log:
-		print(f"BP ended after {iter_no} iterations with BP-err={err:.6g}\n")
-
-	#
-	# Compress the PEPS
-	#
-	TN_params = {}
-	TN_params['T_list'] = TP_ket_list
-	TN_params['e_list'] = e_list
-	TN_params['e_dict'] = e_dict
-
-	TP_ket_list1, trunc_err = BP_compress(TN_params, m_list, Dmax=Dmax,
-		L2thresh=L2thresh, normalize=normalize)
-
-	if log:
-		print(f"BP compressed the PEPO with err={trunc_err:.6g}\n")
-
-		d = peps_dist(TP_ket_list, TP_ket_list1, e_list, e_dict)
-		print("**** COMPRESSION Distance: ", d, "\n")
-	#
-	# Turn it back into a PEPO
-	#
-	TP_list = PEPS_to_PEPO(TP_ket_list1)
-
-	return TP_list, trunc_err
-
-
-
-
-
-
-#
-# -------------------------  local_2RDMs  ------------------------------
-#
-
-def local_2RDMs(T_list, e_list,  e_dict, w_dict):
-
-	rho_dict={}
-
-	for e in e_dict.keys():
-		v1,leg1, v2,leg2 = e_dict[e]
-
-		T1 = T_list[v1]
-		T2 = T_list[v2]
-		w = w_dict[e]
-
-		D = T1.shape[leg1+1]  # Original dimension of the common leg
-		d1 = T1.shape[0]  # physical leg T1
-		d2 = T2.shape[0]  # physical leg T2
-
-		#
-		# Absorb all the weights of T1, T2 into these tensors (except
-		# for the weight of the common leg
-		#
-
-		es1 = e_list[v1]
-		for leg,f in enumerate(es1):
-
-
-			w_mat = diag(w_dict[f])
-
-			T1 = contract_leg(T1, w_mat, leg)
-
-		#
-		# contract T1 with the bra along all legs except for the connecting
-		# one
-		#
-		L = len(T1.shape)
-		sh = list(range(L))
-		sh.remove(0)
-		sh.remove(leg1+1)
-
-		T1ketbra = tensordot(T1, conj(T1), axes=(sh, sh))
-		# T1ketbra form: d, D, d*, D*
-
-
-		es2 = e_list[v2]
-		for leg,f in enumerate(es2):
-
-			if f==e:
-				continue
-
-			w_mat = diag(w_dict[f])
-
-			T2 = contract_leg(T2, w_mat, leg)
-
-		#
-		# contract T2 with the bra along all legs except for the connecting
-		# one
-		#
-		L = len(T2.shape)
-		sh = list(range(L))
-		sh.remove(0)
-		sh.remove(leg2+1)
-
-		T2ketbra = tensordot(T2, conj(T2), axes=(sh, sh))
-		# T2ketbra form: d, D, d*, D*
-
-
-		#
-		# get rho12 by contracting T1ketbra with T2ketbra along D,D*
-		#
-
-		rho12 = tensordot(T1ketbra, T2ketbra, axes=([1,3],[1,3]))
-
-		tr = trace(rho12, axis1=0, axis2=1)
-		tr = trace(tr, axis1=0, axis2=1)
-
-		rho12 = rho12/tr
-
-		rho_dict[e] = rho12
-
-	return rho_dict
-
-
 
 
 
