@@ -129,6 +129,10 @@
 #             3. Remove the qbp dependence; BPSU no longer calls qbp
 #                directly.
 #
+# 13-Jun-2026: Force the calculation of the L2 truncation error in 
+#              lazy_edge_truncation to be using float64, even if 
+#              the underlying tensors are single-precision.
+#
 # ======================================================================
 
 
@@ -1534,9 +1538,11 @@ def lazy_edge_truncation(T1, leg1, T2, leg2, m12, m21, \
 	V = V[:D, :]
 
 	#
-	# Calculate the (normalized) L_2 truncation error
+	# Calculate the (normalized) L_2 truncation error. We force the error
+	# to be of float64 type so that the local fidelity  1-err^2 will be
+	# more accurate.
 	#
-	err = sqrt( sum(s2[D:])/sum(s2) )
+	err = sqrt( sum(s2[D:].astype(np.float64))/sum(s2.astype(np.float64)) )
 	
 	#
 	# Now calculate P_1, P_2
@@ -1618,10 +1624,20 @@ def lazy_PEPS_truncation(T_list, e_list, e_dict, m_list, Dmax=None, L2thresh=1e-
 	            list as the input list, since the compression is done
 	            in-place.
 
-	err     --- Total normalized L_2 compression error
+	err     --- Total normalized L_2 compression error. If we truncate
+	            at bond D according to the Schmidt values {\lambda_i} 
+	            at edge e, then the local error of that truncation
+	            is given by:
+	            
+	            err_e := sqrt(\sum_{i>D}\lambda_i^2)/sqrt(\sum_i \lambda_i^2)
+	            
+	            Then err := \sum_{e\in E} err_e
+	            
+	            Note: the error is always calculated and given as float64.
 	
-	f_sim   --- Total simulation fidelity as defined in appendix A.2 in
-	            arXiv:2503.20870v2
+	f_sim   --- Total simulation fidelity as defined in Supp Material 
+	            S5.A.2 in arXiv:2503.20870v2 (page 26). Essentially, 
+	            this is a proxy to f := |<psi|psi_exact>|^2
 
 
 
@@ -1664,7 +1680,7 @@ def lazy_PEPS_truncation(T_list, e_list, e_dict, m_list, Dmax=None, L2thresh=1e-
 			m_ij, m_ji, L2thresh, Dmax)
 
 		total_err += err
-		f_sim *= 1 - err**2
+		f_sim *= (1 - err**2)
 
 		if normalize_tensors:
 			newTi = newTi/norm(newTi)
