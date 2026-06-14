@@ -1491,7 +1491,7 @@ def lazy_edge_truncation(T1, leg1, T2, leg2, m12, m21, \
 
 	D = s.shape[0]
 	
-	s2 = s**2
+	s2 = (s.astype(np.float64))**2
 
 	
 	#
@@ -1542,7 +1542,7 @@ def lazy_edge_truncation(T1, leg1, T2, leg2, m12, m21, \
 	# to be of float64 type so that the local fidelity  1-err^2 will be
 	# more accurate.
 	#
-	err = sqrt( sum(s2[D:].astype(np.float64))/sum(s2.astype(np.float64)) )
+	err = sqrt( sum(s2[D:])/sum(s2) )
 	
 	#
 	# Now calculate P_1, P_2
@@ -1643,7 +1643,7 @@ def lazy_PEPS_truncation(T_list, e_list, e_dict, m_list, Dmax=None, L2thresh=1e-
 
 	"""
 
-	elog = True
+	elog = False
 
 	if elog:
 		print("\n\n")
