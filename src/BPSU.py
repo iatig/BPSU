@@ -133,6 +133,8 @@
 #              lazy_edge_truncation to be using float64, even if 
 #              the underlying tensors are single-precision.
 #
+# 16-Jun-2026: In apply_gate_to_PEPO, fixed the typo
+#              VG_direct_apply_2local_gate => direct_apply_2local_gate
 # ======================================================================
 
 
@@ -672,12 +674,12 @@ def apply_gate_to_PEPO(T_list, e_list,  e_dict, gket=None, gbra=None, \
 
 		if gket is not None:
 			#
-			# We invoke the direct_VG_apply_2local_gate as if T1, T2 are PEPS
+			# We invoke the direct_apply_2local_gate as if T1, T2 are PEPS
 			# tensors. To account for the extra bra leg we pass
 			# leg1 -> leg1+1, leg2 -> leg2+1
 			#
 
-			newT1, newT2 = direct_VG_apply_2local_gate(T1, T2, leg1+1, leg2+1, gket)
+			newT1, newT2 = direct_apply_2local_gate(T1, T2, leg1+1, leg2+1, gket)
 
 		else:
 			newT1 = T1
@@ -700,7 +702,7 @@ def apply_gate_to_PEPO(T_list, e_list,  e_dict, gket=None, gbra=None, \
 			newT1 = newT1.transpose(perm1)
 			newT2 = newT2.transpose(perm2)
 
-			newT1, newT2 = direct_VG_apply_2local_gate(newT1, newT2, \
+			newT1, newT2 = direct_apply_2local_gate(newT1, newT2, \
 				leg1+1, leg2+1, gbra)
 
 			#
