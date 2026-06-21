@@ -135,6 +135,8 @@
 #
 # 16-Jun-2026: In apply_gate_to_PEPO, fixed the typo
 #              VG_direct_apply_2local_gate => direct_apply_2local_gate
+#
+# 16-Jun-2026: Minor comments changes
 # ======================================================================
 
 
@@ -360,7 +362,8 @@ def direct_apply_2local_gate(T1, T2, leg1, leg2, g):
 
 	g          --- The 2-local gate, given as [i1,j1; i2,j2] where
 	               j1,j2 are the ket legs (contracted with the physical
-	               legs of T1, T2) and i1,i2 are the bra legs.
+	               legs of T1, T2) and i1,i2 are the bra legs (which are
+	               left un-contracted).
 
 
   Output:
@@ -509,6 +512,21 @@ def apply_gate_to_PEPS(T_list, e_list,  e_dict, g, i=None, e=None):
 	must be given, whereas in the second case and edge index e is given.
 
 	After the gate is applied, and updated T_list is returned.
+	
+	A ket Tensor has the legs structure [i_ket, i_1, i_2, ...]
+	where i_ket is the physical leg.
+	
+	If g[i,j] is a 1-local gate we want to apply, the resultant Tensor
+	will be
+	
+	T_new[j, i_1, i_2, ...] := 
+	
+	       \sum_{i_ket} g[j,i_ket]\cdot T_[i_ket, i_1, i_2, ...]
+	
+	just like the usual matrix-vector multiplication convention.
+	
+	The same thing holds for 2-local gates.
+	
 
 	Input Parameters:
 	-----------------
