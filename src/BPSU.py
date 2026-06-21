@@ -136,7 +136,8 @@
 # 16-Jun-2026: In apply_gate_to_PEPO, fixed the typo
 #              VG_direct_apply_2local_gate => direct_apply_2local_gate
 #
-# 16-Jun-2026: Minor comments changes
+# 21-Jun-2026: Minor comments changes
+#
 # ======================================================================
 
 
